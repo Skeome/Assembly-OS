@@ -19,16 +19,18 @@ print_char:                 ; Routine to print a character in AL
 
 start:
     cli                         ; Disable interrupts
-    mov ax, cs                  ; Set DS to our own code segment (0x1000)
-    mov ds, ax                  ; so we can access our data
+    
+    ; --- FIX: Set DS to 0 ---
+    ; We are loaded at 0x1000 and ORG is 0x1000.
+    ; All labels (like 'gdt_descriptor' or 'sectors_to_read') will
+    ; resolve to their physical addresses (e.g., 0x1000 + offset).
+    ; We must set DS=0 to access them directly by their label value.
+    xor ax, ax                  ; AX = 0
+    mov ds, ax                  ; DS = 0
+    ; --- END FIX ---
 
-    ; Load drive ID. We can access BOOT_DRIVE_ADDRESS directly
-    ; because it's in a different segment (0x0000).
-    push ds
-    mov ax, 0x0000              ; Set DS to 0 to access low memory
-    mov ds, ax
+    ; Load drive ID. DS is already 0, so we can access 0x7DFD directly.
     mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID saved by stage 1
-    pop ds                      ; Restore DS back to 0x1000
     
     ; --- 1. Reset the disk controller (with retries) ---
     mov cx, 3               ; Number of retries
@@ -56,7 +58,7 @@ start:
     
     mov ax, KERNEL32_LOAD_SEGMENT   ; ES = 0x1000
     mov es, ax
-    mov bx, 0x0000                  ; BX = 0x0000
+    mov bx, 0x0000                  ; BX = 0x0000 (Load to 0x1000:0000 = 0x10000)
 
     ; --- CHECKPOINT 2 ---
     mov al, '2'
@@ -64,6 +66,8 @@ start:
 
 .read_loop:
     ; --- Convert LBA to CHS ---
+    ; (This LBA-to-CHS logic seems complex and might be fragile,
+    ; but we'll leave it for now as the main bug is DS)
     mov dx, word [current_lba+2]    ; High word of LBA into DX
     mov ax, word [current_lba]      ; Low word of LBA into AX
     
@@ -116,12 +120,8 @@ start:
     mov ah, 0x02                    ; Function: Read Sectors
     mov al, [sectors_this_read]     ; AL = sectors to read
     
-    ; Reload DL (drive) just in case
-    push ds
-    mov ax, 0x0000
-    mov ds, ax
+    ; --- FIX: Reload DL (drive). DS is already 0. ---
     mov dl, [BOOT_DRIVE_ADDRESS]
-    pop ds
     
     int 0x13
     popa
@@ -130,12 +130,8 @@ start:
     ; Read failed, reset disk and retry
     pusha
     
-    ; Reload DL (drive) for reset
-    push ds
-    mov ax, 0x0000
-    mov ds, ax
+    ; --- FIX: Reload DL (drive) for reset. DS is already 0. ---
     mov dl, [BOOT_DRIVE_ADDRESS]
-    pop ds
 
     mov ah, 0x00
     int 0x13
@@ -155,6 +151,8 @@ start:
     add [current_lba], ax
     adc word [current_lba+2], 0
     
+    ; Calculate new offset in paragraphs (bytes / 16)
+    ; (sectors_read * 512) / 16 = sectors_read * 32
     mov cx, 32
     mul cx                          ; AX = sectors_read * 32 (paragraph offset)
     
@@ -185,6 +183,9 @@ start:
     call print_char
 
     ; --- FIX: LGDT needs the address relative to our ORG ---
+    ; DS is 0, so [gdt_descriptor] will access physical address 0x1000 + offset
+    ; which is correct. The 'dd gdt_start' inside the descriptor will
+    ; also resolve to the correct physical address 0x1000 + offset.
     lgdt [gdt_descriptor]
     ; --- END FIX ---
 
@@ -211,18 +212,6 @@ start:
     lidt [0]
     hlt
 
-; 16-bit helper routines (No longer needed)
-; wait_for_input:
-;     in al, 0x64
-;     test al, 0x02
-;     jnz wait_for_input
-;     ret
-; 
-; wait_for_output:
-;     in al, 0x64
-;     test al, 0x01
-;     jz wait_for_output
-;     ret
 
 ; --- Data for read loop ---
 sectors_to_read:    dw 0
@@ -237,7 +226,6 @@ disk_error:
     int 0x10
 
     ; Simple error handling: just halt.
-    ; We are in a weird state (halfway to protected mode), so don't try video.
     cli
     hlt
     jmp disk_error
@@ -268,7 +256,7 @@ gdt_end:
 ; GDT descriptor (pointer) for the LGDT instruction
 gdt_descriptor:
     dw gdt_end - gdt_start - 1  ; Limit (size of GDT - 1)
-    dd gdt_start                ; Base address of GDT
+    dd gdt_start                ; Base address of GDT (physical address due to ORG and DS=0)
 
 ; ==================================================================
 ; We are now in 32-bit Protected Mode!
@@ -291,7 +279,7 @@ protected_mode_start:
     mov esp, 0x90000
 
     ; --- 3. Jump to the 32-bit kernel entry point ---
-    ; We loaded it at 0x10000, and our GDT has a- 0,
+    ; We loaded it at 0x10000, and our GDT has a base of 0,
     ; so we can just jump directly to that address.
     jmp KERNEL32_JUMP_ADDRESS
 
