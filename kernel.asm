@@ -41,39 +41,15 @@ start:
 .read_kernel_stage:
     pop cx                  ; Discard retry counter from stack
 
-    ; --- CHECKPOINT 1 ---
-    mov ah, 0x0E
-    mov al, '1'
-    int 0x10
-
 ; --- 2. Load the kernel from disk (with retries) ---
-    ; We must use CHS (ah=0x02) because LBA (ah=0x42) is not supported.
-    ; We need to read 256 sectors starting from LBA 41
-    ; to ES:BX = 0x1000:0x0000 (physical 0x10000)
-    
     mov word [sectors_to_read], 256
     mov dword [current_lba], 41
     
     mov ax, KERNEL32_LOAD_SEGMENT   ; ES = 0x1000
     mov es, ax
     mov bx, 0x0000                  ; BX = 0x0000
-                                    ; ES:BX = 0x1000:0x0000 (physical 0x10000)
-
-    ; --- CHECKPOINT 2 ---
-    mov ah, 0x0E
-    mov al, '2'
-    int 0x10
 
 .read_loop:
-    ; --- CHECKPOINT 'a' (start of loop) ---
-    mov ah, 0x0E
-    mov al, 'a'
-    int 0x10
-
-    ; Check if we're done
-    cmp word [sectors_to_read], 0
-    je .a20_stage                   ; All sectors read, jump to A20
-
     ; --- Convert LBA to CHS ---
     mov dx, word [current_lba+2]    ; High word of LBA into DX
     mov ax, word [current_lba]      ; Low word of LBA into AX
@@ -91,32 +67,20 @@ start:
     div di                          ; 16-bit AX / 16-bit DI
                                     ; AX = Head, DX = Sector-1
 
-    ; --- FIX 1: Use 16-bit remainder from DX ---
     mov byte [head_temp], al        ; AL is Head (from AX)
-    
     inc dx                          ; Increment 16-bit remainder (Sector-1)
     mov cl, dl                      ; CL = Sector (1-based)
-    ; --- END FIX 1 ---
     
     pop ax                          ; AX = Cylinder (10 bits, C9 C8 ... C0)
     mov ch, al                      ; CH = Cylinder low 8 bits (C7...C0)
     
-    ; --- FIX 2: Correctly mask high bits ---
     mov dl, ah                      ; DL = Cylinder high 8 bits (000000 C9 C8)
     and dl, 0x03                    ; Mask to get only C9, C8
     shl dl, 6                       ; Shift to bits 7 and 6
     or cl, dl                       ; Combine with Sector
-    ; --- END FIX 2 ---
     
     mov dh, byte [head_temp]        ; Retrieve Head
-    ; DL = drive (still set from start)
-
-
-    ; --- CHECKPOINT 'b' (LBA->CHS done) ---
-    mov ah, 0x0E
-    mov al, 'b'
-    int 0x10
-
+    
     ; --- Determine sectors to read ---
     mov al, cl
     and al, 0x3F                    
@@ -135,51 +99,41 @@ start:
     ; --- Attempt Read (with retries) ---
     mov cx, 3                       ; Retry count
 .retry_read:
-    ; --- CHECKPOINT 'c' (Before read) ---
-    mov ah, 0x0E
-    mov al, 'c'
-    int 0x10
-
     pusha
     mov ah, 0x02                    ; Function: Read Sectors
     mov al, [sectors_this_read]     ; AL = sectors to read
-    ; CH = Cylinder 
-    ; CL = Sector / Cyl high
-    ; DH = Head
-    ; DL = Drive (set at start)
-    ; ES:BX = Destination (set at start / updated in loop)
+    
+    ; Reload DL (drive) just in case
+    push ds
+    mov ax, 0x0000
+    mov ds, ax
+    mov dl, [BOOT_DRIVE_ADDRESS]
+    pop ds
+    
     int 0x13
     popa
     jnc .read_success               ; Success!
     
-    ; --- CHECKPOINT 'e' (Read failed, before reset) ---
-    mov ah, 0x0E
-    mov al, 'e'
-    int 0x10
-
     ; Read failed, reset disk and retry
     pusha
+    
+    ; Reload DL (drive) for reset
+    push ds
+    mov ax, 0x0000
+    mov ds, ax
+    mov dl, [BOOT_DRIVE_ADDRESS]
+    pop ds
+
     mov ah, 0x00
-    ; DL = drive (still set)
     int 0x13
     popa
     
-    ; --- CHECKPOINT 'f' (After reset) ---
-    mov ah, 0x0E
-    mov al, 'f'
-    int 0x10
-
     dec cx
     jnz .retry_read
     
     jmp disk_error                  ; All retries failed
 
 .read_success:
-    ; --- CHECKPOINT 'd' (Read success) ---
-    mov ah, 0x0E
-    mov al, 'd'
-    int 0x10
-
     ; --- Update counters and pointers ---
     mov al, [sectors_this_read]
     xor ah, ah                      ; AX = sectors we just read
@@ -197,70 +151,26 @@ start:
     mov es, bx                      
     pop bx                          
     
-    ; --- CHECKPOINT 'g' (Loop done, about to jmp) ---
-    mov ah, 0x0E
-    mov al, 'g'
-    int 0x10
+    ; --- Check if we are done *at the end* of the loop ---
+    cmp word [sectors_to_read], 0
+    jz .a20_stage                   ; All sectors read, jump to A20
 
     jmp .read_loop                  ; Read next chunk
 
 .a20_stage:
-    ; --- CHECKPOINT 3 ---
-    mov ah, 0x0E
-    mov al, '3'
-    int 0x10
+    ; --- Use reliable BIOS call to enable A20 ---
+    mov ax, 0x2401              ; Function: Enable A20 Gate
+    int 0x15                    ; Call BIOS
+    ; --- END FIX ---
 
-; Enable A20 line (via keyboard controller)
-    call wait_for_input         ; Wait for input buffer to be empty
-    mov al, 0xAD                ; Command: Disable keyboard
-    out 0x64, al
-    
-    call wait_for_input
-    mov al, 0xD0                ; Command: Read from controller output port
-    out 0x64, al
-    
-    call wait_for_output        ; Wait for output buffer to be full
-    in al, 0x60                 ; Read output port
-    push eax                    ; Save current state
-    
-    call wait_for_input
-    mov al, 0xD1                ; Command: Write to controller output port
-    out 0x64, al
-    
-    call wait_for_input
-    pop eax                     ; Get old state
-    or al, 0x02                 ; Set bit 1 (A20 Gate)
-    out 0x60, al                ; Write new state back
-    
-    call wait_for_input
-    mov al, 0xAE                ; Command: Enable keyboard
-    out 0x64, al
-    
-    call wait_for_input
-
-    ; --- CHECKPOINT 4 ---
-    mov ah, 0x0E
-    mov al, '4'
-    int 0x10
-
-    ; Load the Global Descriptor Table
-    lgdt [gdt_descriptor]
-
-    ; --- CHECKPOINT 5 ---
-    mov ah, 0x0E
-    mov al, '5'
-    int 0x10
+    ; --- FIX: LGDT needs the address relative to our ORG ---
+    lgdt [gdt_descriptor - 0x1000]
+    ; --- END FIX ---
 
     ; Switch to protected mode by setting the PE bit in CR0
     mov eax, cr0
     or eax, 0x1
     mov cr0, eax
-
-    ; --- CHECKPOINT 6 ---
-    ; This will print *right before* we jump to 32-bit mode
-    mov ah, 0x0E
-    mov al, '6'
-    int 0x10
 
     ; Far jump to our 32-bit code segment (selector 0x08).
     ; This jump also clears the CPU's instruction pipeline.
@@ -268,18 +178,18 @@ start:
     db 0x66
     jmp 0x08:protected_mode_start
 
-; 16-bit helper routines for A20
-wait_for_input:
-    in al, 0x64
-    test al, 0x02
-    jnz wait_for_input
-    ret
-
-wait_for_output:
-    in al, 0x64
-    test al, 0x01
-    jz wait_for_output
-    ret
+; 16-bit helper routines (No longer needed)
+; wait_for_input:
+;     in al, 0x64
+;     test al, 0x02
+;     jnz wait_for_input
+;     ret
+; 
+; wait_for_output:
+;     in al, 0x64
+;     test al, 0x01
+;     jz wait_for_output
+;     ret
 
 ; --- Data for read loop ---
 sectors_to_read:    dw 0
@@ -288,11 +198,6 @@ head_temp:          db 0
 current_lba:        dd 0
 
 disk_error:
-    ; --- CHECKPOINT 'E' (ERROR) ---
-    mov ah, 0x0E
-    mov al, 'E'
-    int 0x10
-
     ; Simple error handling: just halt.
     ; We are in a weird state (halfway to protected mode), so don't try video.
     cli
@@ -329,7 +234,7 @@ gdt_descriptor:
 
 ; ==================================================================
 ; We are now in 32-bit Protected Mode!
-; =================================_
+; ==================================================================
 [BITS 32]
 protected_mode_start:
 

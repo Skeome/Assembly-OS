@@ -13,10 +13,10 @@ kernel_start:
     ; This MUST be the first thing we do.
     ; We set up our own stack, trusting nothing from the bootloader.
     mov esp, 0x90000
+    cli                     ; Disable interrupts
 
     ; --- 2. Initialize Interrupts ---
     ; Now that we have a stack, we can make calls.
-    cli                     ; Disable interrupts while we set things up
     
     call idt_install        ; Load the IDT register (from idt.asm)
     call isrs_install       ; Populate the IDT with exception handlers (from isrs.asm)
