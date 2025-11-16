@@ -14,47 +14,196 @@ BOOT_DRIVE_ADDRESS equ 0x7DFD ; The physical address where boot.asm stored the d
 
 start:
     cli                         ; Disable interrupts
-    
-    ; Load the 32-bit kernel (kernel32.bin) from disk
-    mov ax, KERNEL32_LOAD_SEGMENT
-    mov es, ax                  ; Destination segment (0x1000)
-    mov bx, 0x0000              ; Destination offset (0x0000) -> physical 0x10000
-    
-    mov ah, 0x02                ; Function: "Read Sectors"
-    mov al, 255                 ; Read max sectors (127.5 KB)
-    mov ch, 1                   ; Track (Cylinder) 1
-    mov cl, 6                   ; Start at sector 6
-    mov dh, 0                   ; Head 0
-    
-    ; Restore boot drive number
+    mov ax, cs                  ; Set DS to our own code segment (0x1000)
+    mov ds, ax                  ; so we can access our data
+
+    ; Load drive ID. We can access BOOT_DRIVE_ADDRESS directly
+    ; because it's in a different segment (0x0000).
     push ds
     mov ax, 0x0000              ; Set DS to 0 to access low memory
     mov ds, ax
     mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID saved by stage 1
-    pop ds
+    pop ds                      ; Restore DS back to 0x1000
     
-    ; Reset disk controller (just in case)
-    push ax                     ; Save AX (read params)
+    ; --- 1. Reset the disk controller (with retries) ---
+    mov cx, 3               ; Number of retries
+.reset_loop:
+    push cx
+    mov ah, 0x00            ; Function 0x00: Reset Disk System
+    ; DL (drive) was loaded up top
+    int 0x13
+    jnc .read_kernel_stage  ; If carry flag is clear, success!
+    pop cx
+    loop .reset_loop        ; If carry flag was set (error), try again.
+
+    jmp disk_error          ; If all retries fail
+
+.read_kernel_stage:
+    pop cx                  ; Discard retry counter from stack
+
+; --- 2. Load the kernel from disk (with retries) ---
+    ; We must use CHS (ah=0x02) because LBA (ah=0x42) is not supported.
+    ; We need to read 256 sectors starting from LBA 41
+    ; to ES:BX = 0x1000:0x0000 (physical 0x10000)
+    
+    mov word [sectors_to_read], 256
+    mov dword [current_lba], 41
+    
+    mov ax, KERNEL32_LOAD_SEGMENT   ; ES = 0x1000
+    mov es, ax
+    mov bx, 0x0000                  ; BX = 0x0000
+                                    ; ES:BX = 0x1000:0x0000 (physical 0x10000)
+
+.read_loop:
+    ; Check if we're done
+    cmp word [sectors_to_read], 0
+    je .a20_stage                   ; All sectors read, jump to A20
+
+    ; --- Convert LBA to CHS ---
+    ; LBA is in [current_lba]
+    ; Formulas (for 1.44MB floppy):
+    ; SectorsPerTrack = 18
+    ; HeadsPerCylinder = 2
+    ; SectorsPerCylinder = 36
+    ;
+    ; Cylinder = LBA / 36
+    ; Temp = LBA % 36
+    ; Head = Temp / 18
+    ; Sector = (Temp % 18) + 1
+    
+    mov ax, word [current_lba+2]    ; High word of LBA
+    mov dx, word [current_lba]      ; Low word of LBA
+    
+    xor di, di                      ; di = 0
+    mov cx, 36                      ; cx = SectorsPerCylinder
+    div cx                          ; dx:ax / 36 -> ax = Cylinder, dx = Temp
+    
+    push ax                         ; Save Cylinder
+    
+    ; Now ax = Cylinder, dx = Temp
+    xor ax, ax                      ; Clear ax
+    mov ax, dx                      ; ax = Temp
+    xor dx, dx                      ; Clear dx
+    mov di, 18                      ; di = SectorsPerTrack
+    div di                          ; dx:ax / 18 -> ax = Head, dx = Sector-1
+    
+    mov byte [head_temp], ah        ; Save Head (it's in AH)
+    
+    inc dx                          ; dx = Sector (1-based)
+    
+    ; Now we have:
+    ; [stack] = Cylinder
+    ; AL = Head (low 8 bits)
+    ; DX = Sector
+    
+    mov cl, dl                      ; Sector
+    pop ax                          ; Retrieve Cylinder
+    mov ch, al                      ; Cylinder low 8 bits
+    mov dh, al
+    shr dh, 2                       ; Get high 2 bits of Cylinder
+    and dh, 0xC0                    ; Isolate
+    or cl, dh                       ; CL = Sector (bits 0-5) | Cyl high (bits 6-7)
+    
+    mov dh, byte [head_temp]        ; Retrieve Head
+    ; DL = drive (already set from start)
+
+    ; --- Determine sectors to read ---
+    ; We read up to the end of the current track to be safe.
+    ; AL = SectorsPerTrack(18) - Sector(CL bits 0-5) + 1
+    mov al, cl
+    and al, 0x3F                    ; Isolate sector number (bits 0-5)
+    mov ah, 18
+    sub ah, al
+    inc ah                          ; AH = sectors left on track
+    mov al, ah                      ; AL = sectors left on track
+    
+    ; --- FIX: Compare 16-bit values ---
+    xor ah, ah                      ; Zero-extend AL (sectors this track) into AX
+    
+    mov cx, [sectors_to_read]       ; Get total remaining sectors (16-bit)
+    cmp ax, cx                      ; Compare sectors_this_track (AX) to total (CX)
+    jbe .read_count_ok              ; If ax <= cx, read ax sectors
+    mov ax, cx                      ; Otherwise, read remaining sectors (cx)
+.read_count_ok:
+    mov byte [sectors_this_read], al ; Save for later
+    ; --- END FIX ---
+
+    ; --- Attempt Read (with retries) ---
+    mov cx, 3                       ; Retry count
+.retry_read:
+    pusha
+    mov ah, 0x02                    ; Function: Read Sectors
+    mov al, [sectors_this_read]     ; AL = sectors to read
+    ; CH = Cylinder 
+    ; CL = Sector / Cyl high
+    ; DH = Head
+    ; DL = Drive (set at start)
+    ; ES:BX = Destination (set at start / updated in loop)
+    int 0x13
+    popa
+    jnc .read_success               ; Success!
+    
+    ; Read failed, reset disk and retry
+    pusha
     mov ah, 0x00
+    ; DL = drive (still set)
     int 0x13
-    jc disk_error               ; Handle disk error
-    pop ax                      ; Restore AX
+    popa
+    
+    dec cx
+    jnz .retry_read
+    
+    jmp disk_error                  ; All retries failed
 
-    ; Read the kernel
-    mov dl, [BOOT_DRIVE_ADDRESS] ; Reload drive number (int 0x13/ah=0x00 corrupts it)
-    int 0x13
-    jc disk_error               ; Handle disk error
+.read_success:
+    ; --- Update counters and pointers ---
+    mov al, [sectors_this_read]
+    xor ah, ah                      ; AX = sectors we just read
+    
+    ; Update sectors_to_read
+    sub [sectors_to_read], ax       ; Decrease remaining count
 
-    ; --- A tiny delay function for I/O port access ---
-io_wait:
-    out 0x80, al  ; Write to an unused port (0x80 is common)
-    ret
+    ; Update current_lba
+    add [current_lba], ax
+    adc word [current_lba+2], 0
+    
+    ; Update destination ES:BX
+    ; We add (sectors_read * 512) to ES:BX
+    ; 512 / 16 = 32. So we add (sectors_read * 32) to ES.
+    mov cx, 32
+    mul cx                          ; AX = sectors_read * 32
+    add es, ax                      ; Add to segment
+    
+    jmp .read_loop                  ; Read next chunk
 
-   ; Enable A20 line (via "Fast A20" method)
-    in al, 0x92     ; Read the "Fast A20" port
-    or al, 0x02     ; Set bit 1 (the A20 gate)
-    out 0x92, al    ; Write it back
-    call io_wait
+.a20_stage:
+; Enable A20 line (via keyboard controller)
+    call wait_for_input         ; Wait for input buffer to be empty
+    mov al, 0xAD                ; Command: Disable keyboard
+    out 0x64, al
+    
+    call wait_for_input
+    mov al, 0xD0                ; Command: Read from controller output port
+    out 0x64, al
+    
+    call wait_for_output        ; Wait for output buffer to be full
+    in al, 0x60                 ; Read output port
+    push eax                    ; Save current state
+    
+    call wait_for_input
+    mov al, 0xD1                ; Command: Write to controller output port
+    out 0x64, al
+    
+    call wait_for_input
+    pop eax                     ; Get old state
+    or al, 0x02                 ; Set bit 1 (A20 Gate)
+    out 0x60, al                ; Write new state back
+    
+    call wait_for_input
+    mov al, 0xAE                ; Command: Enable keyboard
+    out 0x64, al
+    
+    call wait_for_input
 
     ; Load the Global Descriptor Table
     lgdt [gdt_descriptor]
@@ -82,6 +231,12 @@ wait_for_output:
     test al, 0x01
     jz wait_for_output
     ret
+
+; --- Data for read loop ---
+sectors_to_read:    dw 0
+sectors_this_read:  db 0
+head_temp:          db 0
+current_lba:        dd 0
 
 disk_error:
     ; Simple error handling: just halt.
