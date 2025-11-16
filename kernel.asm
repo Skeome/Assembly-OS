@@ -8,9 +8,16 @@
 [BITS 16]
 [ORG 0x1000] ; We are loaded at physical address 0x1000
 
-KERNEL32_LOAD_SEGMENT equ 0x1000  ; 16-bit segment (0x1000 * 16 = 0x10000)
+KERNEL32_LOAD_S_EGMENT equ 0x1000  ; 16-bit segment (0x1000 * 16 = 0x10000)
 KERNEL32_JUMP_ADDRESS equ 0x10000 ; 32-bit physical address
 BOOT_DRIVE_ADDRESS equ 0x7DFD ; The physical address where boot.asm stored the drive ID
+
+; --- Data for read loop ---
+sectors_to_read:    dw 0
+sectors_this_read:  db 0
+head_temp:          db 0
+current_lba:        dd 0
+
 
 print_char:                 ; Routine to print a character in AL
     mov ah, 0x0E
@@ -19,6 +26,8 @@ print_char:                 ; Routine to print a character in AL
 
 start:
     cli                         ; Disable interrupts
+    
+    xor dx, dx                  ; Clear DX, including DL (drive)
 
     ; --- Set up the stack and segment registers ---
     ; We are loaded at 0x1000. We must set up our own stack
@@ -29,7 +38,7 @@ start:
     mov ds, ax                  ; DS = 0 (for accessing data by physical address)
     mov es, ax                  ; ES = 0 (for... just in case)
     mov ss, ax                  ; SS = 0
-    mov sp, 0x1000              ; Stack pointer at 0x0000:0x1000 (our load address)
+    mov sp, 0x9000              ; Set stack pointer to a safe place (9000h)
     
     sti                         ; Re-enable interrupts
 
@@ -57,7 +66,8 @@ start:
     mov al, '1'
     call print_char
 
-; --- 2. Load the kernel from disk (with retries) ---
+; --- 2. Load the kernel from disk using CHS (reverted) ---
+    
     mov word [sectors_to_read], 256
     mov dword [current_lba], 41
     
@@ -71,30 +81,32 @@ start:
 
 .read_loop:
     ; --- Convert LBA to CHS ---
-    ; (This LBA-to-CHS logic seems complex and might be fragile,
-    ; but we'll leave it for now as the main bug is DS)
-    mov dx, word [current_lba+2]    ; High word of LBA into DX
-    mov ax, word [current_lba]      ; Low word of LBA into AX
     
-    xor di, di                      
-    mov cx, 36                      
-    div cx                          ; 32-bit DX:AX / 16-bit CX
+    ; --- FIX: Be explicit about 32-bit divide ---
+    xor edx, edx                    ; Clear high 32-bits of EDX:EAX
+    mov dx, word [current_lba+2]    ; dx = high word of LBA
+    mov ax, word [current_lba]      ; ax = low word of LBA
+    
+    mov di, 36                      ; 18 sectors/track * 2 heads
+    div di                          ; 32-bit EDX:EAX / 16-bit DI
                                     ; AX = Cylinder, DX = Remainder (Temp)
     
     push ax                         ; Save Cylinder (in AX)
     
     mov ax, dx                      ; Remainder (Temp) into AX
     xor dx, dx                      ; Zero DX for 16-bit division
-    mov di, 18                      
+    mov di, 18                      ; 18 sectors/track
     div di                          ; 16-bit AX / 16-bit DI
-                                    ; AX = Head, DX = Sector-1
+                                    ; Quotient -> AX (Head)
+                                    ; Remainder -> DX (Sector-1)
 
+    ; --- This was the bug. Results are in AX (Head) and DX (Sector-1) ---
     mov byte [head_temp], al        ; AL is Head (from AX)
     inc dx                          ; Increment 16-bit remainder (Sector-1)
     mov cl, dl                      ; CL = Sector (1-based)
     
     pop ax                          ; AX = Cylinder (10 bits, C9 C8 ... C0)
-    mov ch, al                      ; CH = Cylinder low 8 bits (C7...C0)
+    mov ch, al                      ; CH = C'ylinder low 8 bits (C7...C0)
     
     mov dl, ah                      ; DL = Cylinder high 2 bits (000000 C9 C8)
     and dl, 0x03                    ; Mask to get only C9, C8
@@ -105,14 +117,13 @@ start:
     
     ; --- Determine sectors to read ---
     mov al, cl
-    and al, 0x3F                    
+    and al, 0x3F                    ; al = sector (1-18)
     mov ah, 18
-    sub ah, al
-    inc ah                          
+    sub ah, al                      ; ah = 18 - sector
+    inc ah                          ; ah = sectors left on track
     mov al, ah                      
     xor ah, ah                      ; ax = sectors left on track
     
-    ; --- FIX: Use DI, not CX or BX, to avoid clobbering registers ---
     mov di, [sectors_to_read]       ; DI = total sectors remaining
     cmp ax, di                      
     jbe .read_count_ok              
@@ -121,29 +132,24 @@ start:
     mov byte [sectors_this_read], al 
 
     ; --- Attempt Read (with retries) ---
-    ; --- FIX: Use DI for retry counter. CX/DX hold CHS, BX holds buffer offset ---
     mov di, 3                       ; Retry count in DI
 .retry_read:
-    pusha                           ; Saves all registers, including ES and BX
+    pusha                           ; Saves all registers (ES, BX, CX, DX)
     mov ah, 0x02                    ; Function: Read Sectors
     mov al, [sectors_this_read]     ; AL = sectors to read
     
-    ; CX, DX hold CHS (from LBA conversion)
-    ; ES:BX hold buffer (e.g., 0x1000:0000, saved by pusha)
-    
-    ; Reload DL (drive). DS is 0.
+    ; DL (drive) needs to be reloaded (it was clobbered by CHS math)
     mov dl, [BOOT_DRIVE_ADDRESS]
     
+    ; ES:BX, CX, DX were set before pusha
+    
     int 0x13
-    popa                            ; Restores all registers (CX, DX, BX, etc.)
+    popa                            ; Restores all registers
     jnc .read_success               ; Success!
     
     ; Read failed, reset disk and retry
     pusha
-    
-    ; Reload DL (drive) for reset. DS is 0.
     mov dl, [BOOT_DRIVE_ADDRESS]
-
     mov ah, 0x00
     int 0x13
     popa
@@ -151,7 +157,10 @@ start:
     dec di                          ; Decrement retry counter in DI
     jnz .retry_read
     
-    jmp disk_error                  ; All retries failed
+    ; --- Read failed after all retries ---
+    mov al, 'F'
+    call print_char
+    jmp disk_error                  
 
 .read_success:
     ; --- Update counters and pointers ---
@@ -163,18 +172,15 @@ start:
     adc word [current_lba+2], 0
     
     ; Calculate new paragraph offset for ES
-    ; (sectors_read * 512 bytes/sector) / 16 bytes/paragraph = sectors_read * 32
     mov cx, 32
-    mul cx                          ; AX = paragraph offset to add
+    mul cx                          ; AX = paragraph offset to add (DX is clobbered)
     
-    ; Add this to ES. BX is always 0.
     push bx                         ; Save BX (which is 0)
     mov bx, es                      
     add bx, ax                      
     mov es, bx                      
-    pop bx                          ; Restore BX (back to 0)
+    pop bx                          ; Restore B (back to 0)
     
-    ; --- Check if we are done *at the end* of the loop ---
     cmp word [sectors_to_read], 0
     jz .a20_stage                   ; All sectors read, jump to A20
 
@@ -186,57 +192,38 @@ start:
     call print_char
 
     ; --- Use reliable BIOS call to enable A20 ---
-    mov ax, 0x2401              ; Function: Enable A20 Gate
+    mov ah, 0x0C                ; Function 0Ch: Set A20 Gate Status
+    mov al, 0x01                ; Enable A20 Gate
     int 0x15                    ; Call BIOS
-    ; --- END FIX ---
+    jc disk_error               ; Jump if error (e.g., function not supported)
 
     ; --- CHECKPOINT 4 ---
     mov al, '4'
-    call print_char
+    call print_call
 
-    ; --- FIX: LGDT needs the address relative to our ORG ---
-    ; DS is 0, so [gdt_descriptor] will access physical address 0x1000 + offset
-    ; which is correct. The 'dd gdt_start' inside the descriptor will
-    ; also resolve to the correct physical address 0x1000 + offset.
+    ; --- Load GDT ---
     lgdt [gdt_descriptor]
-    ; --- END FIX ---
 
     ; --- CHECKPOINT 5 ---
     mov al, '5'
     call print_char
 
-    ; --- NEW CHECKPOINT 6 ---
-    ; This will tell us if LGDT *itself* passed.
-    ; If we see '6', the GDT is loaded.
+    ; --- CHECKPOINT 6 ---
     mov al, '6'
     call print_char
-    ; --- END NEW CHECKPOINT ---
 
-    ; Switch to protected mode by setting the PE bit in CR0
+    ; Switch to protected mode
     mov eax, cr0
     or eax, 0x1
     mov cr0, eax
 
-    ; Far jump to our 32-bit code segment (selector 0x08).
-    ; This jump also clears the CPU's instruction pipeline.
-    ; We use a 32-bit operand size prefix (0x66)
+    ; Far jump
     db 0x66
     jmp 0x08:protected_mode_start
 
-    ; --- CHECKPOINT 7 (was 6) ---
-    ; This code should NOT be reached. If it is, the jump failed.
-    ; This MUST be after the jmp, as it's 32-bit code.
-    ; We can't print from here as BIOS is not available.
-    ; So we'll just triple fault by loading a null IDT.
+    ; --- CHECKPOINT 7 ---
     lidt [0]
     hlt
-
-
-; --- Data for read loop ---
-sectors_to_read:    dw 0
-sectors_this_read:  db 0
-head_temp:          db 0
-current_lba:        dd 0
 
 disk_error:
     ; --- CHECKPOINT 'E' (ERROR) ---
@@ -298,8 +285,6 @@ protected_mode_start:
     mov esp, 0x90000
 
     ; --- 3. Jump to the 32-bit kernel entry point ---
-    ; We loaded it at 0x10000, and our GDT has a base of 0,
-    ; so we can just jump directly to that address.
     jmp KERNEL32_JUMP_ADDRESS
 
     ; We should never get here
@@ -307,5 +292,5 @@ protected_mode_start:
     hlt
 
 ; --- Padding ---
-; Pad the rest of the file to 20KB (40 sectors * 512 bytes)
+; Pad the rest of a 512-byte sector
 times 20480 - ($ - $$) db 0

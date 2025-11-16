@@ -50,7 +50,7 @@ start:
     mov bx, KERNEL_LOAD_OFFSET
 
     mov ah, 0x02            ; Function 0x02: Read Sectors
-    mov al, 40              ; Read 40 sectors (40 * 512 = 20KB)
+    mov al, 296             ; Read 296 sectors (296 * 512 = 153.6KB)
     mov ch, 0               ; Cylinder 0
     mov cl, 2               ; Sector 2 (Sector 1 is us)
     mov dh, 0               ; Head 0
