@@ -19,15 +19,20 @@ print_char:                 ; Routine to print a character in AL
 
 start:
     cli                         ; Disable interrupts
+
+    ; --- Set up the stack and segment registers ---
+    ; We are loaded at 0x1000. We must set up our own stack
+    ; before we can call any interrupts (like int 0x13).
+    ; We will set the stack to grow down from our load address.
     
-    ; --- FIX: Set DS to 0 ---
-    ; We are loaded at 0x1000 and ORG is 0x1000.
-    ; All labels (like 'gdt_descriptor' or 'sectors_to_read') will
-    ; resolve to their physical addresses (e.g., 0x1000 + offset).
-    ; We must set DS=0 to access them directly by their label value.
     xor ax, ax                  ; AX = 0
-    mov ds, ax                  ; DS = 0
-    ; --- END FIX ---
+    mov ds, ax                  ; DS = 0 (for accessing data by physical address)
+    mov es, ax                  ; ES = 0 (for... just in case)
+    mov ss, ax                  ; SS = 0
+    mov sp, 0x1000              ; Stack pointer at 0x0000:0x1000 (our load address)
+    
+    sti                         ; Re-enable interrupts
+
 
     ; Load drive ID. DS is already 0, so we can access 0x7DFD directly.
     mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID saved by stage 1
