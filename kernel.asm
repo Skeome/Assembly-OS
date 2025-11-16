@@ -105,20 +105,27 @@ start:
     sub ah, al
     inc ah                          
     mov al, ah                      
-    xor ah, ah                      
-    mov cx, [sectors_to_read]       
-    cmp ax, cx                      
+    xor ah, ah                      ; ax = sectors left on track
+    
+    ; --- FIX 1: Use BX instead of CX to avoid clobbering CHS ---
+    mov bx, [sectors_to_read]       
+    cmp ax, bx                      
     jbe .read_count_ok              
-    mov ax, cx                      
+    mov ax, bx                      
 .read_count_ok:
     mov byte [sectors_this_read], al 
 
     ; --- Attempt Read (with retries) ---
-    mov cx, 3                       ; Retry count
+    ; --- FIX 2: Use BX for retry counter, CX/DX already hold CHS ---
+    mov bx, 3                       ; Retry count in BX
 .retry_read:
     pusha
     mov ah, 0x02                    ; Function: Read Sectors
     mov al, [sectors_this_read]     ; AL = sectors to read
+    
+    ; CX, DX hold CHS. ES holds buffer segment. BX holds...
+    ; ah, PUSHA saves BX, so the ES:BX buffer pointer is fine.
+    ; We just need to restore DL (drive)
     
     ; --- FIX: Reload DL (drive). DS is already 0. ---
     mov dl, [BOOT_DRIVE_ADDRESS]
@@ -137,7 +144,7 @@ start:
     int 0x13
     popa
     
-    dec cx
+    dec bx                          ; Decrement retry counter in BX
     jnz .retry_read
     
     jmp disk_error                  ; All retries failed
@@ -193,6 +200,13 @@ start:
     mov al, '5'
     call print_char
 
+    ; --- NEW CHECKPOINT 6 ---
+    ; This will tell us if LGDT *itself* passed.
+    ; If we see '6', the GDT is loaded.
+    mov al, '6'
+    call print_char
+    ; --- END NEW CHECKPOINT ---
+
     ; Switch to protected mode by setting the PE bit in CR0
     mov eax, cr0
     or eax, 0x1
@@ -204,7 +218,7 @@ start:
     db 0x66
     jmp 0x08:protected_mode_start
 
-    ; --- CHECKPOINT 6 ---
+    ; --- CHECKPOINT 7 (was 6) ---
     ; This code should NOT be reached. If it is, the jump failed.
     ; This MUST be after the jmp, as it's 32-bit code.
     ; We can't print from here as BIOS is not available.
