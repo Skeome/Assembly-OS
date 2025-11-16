@@ -9,22 +9,19 @@
 org 0x10000 ; We are loaded at physical address 0x10000
 
 kernel_start:
-    ; --- 1. Initialize Interrupts ---
-    ; This is the most critical step. We must set up our exception
-    ; handlers before doing anything else, so if something goes
-    ; wrong, we get a message instead of a triple fault.
+    ; --- 1. Setup a proper stack ---
+    ; This MUST be the first thing we do.
+    ; We set up our own stack, trusting nothing from the bootloader.
+    mov esp, 0x90000
+
+    ; --- 2. Initialize Interrupts ---
+    ; Now that we have a stack, we can make calls.
     cli                     ; Disable interrupts while we set things up
     
     call idt_install        ; Load the IDT register (from idt.asm)
     call isrs_install       ; Populate the IDT with exception handlers (from isrs.asm)
     call PIC_remap          ; Remap the PIC controllers (from pic.asm)
     
-    ; --- 2. Setup a proper stack ---
-    ; We are currently using the old bootloader stack.
-    ; We'll set up a new stack that grows downwards from 0x90000.
-    ; This is a safe, unused area of RAM.
-    mov esp, 0x90000
-
     ; --- 3. Clear the screen ---
     ; Video memory is at 0xB8000. Our GDT gives us flat 4GB
     ; access, so we can just write there.
