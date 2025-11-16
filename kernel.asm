@@ -107,44 +107,43 @@ start:
     mov al, ah                      
     xor ah, ah                      ; ax = sectors left on track
     
-    ; --- FIX 1: Use BX instead of CX to avoid clobbering CHS ---
-    mov bx, [sectors_to_read]       
-    cmp ax, bx                      
+    ; --- FIX: Use DI, not CX or BX, to avoid clobbering registers ---
+    mov di, [sectors_to_read]       ; DI = total sectors remaining
+    cmp ax, di                      
     jbe .read_count_ok              
-    mov ax, bx                      
+    mov ax, di                      ; ax = min(sectors_on_track, sectors_remaining)
 .read_count_ok:
     mov byte [sectors_this_read], al 
 
     ; --- Attempt Read (with retries) ---
-    ; --- FIX 2: Use BX for retry counter, CX/DX already hold CHS ---
-    mov bx, 3                       ; Retry count in BX
+    ; --- FIX: Use DI for retry counter. CX/DX hold CHS, BX holds buffer offset ---
+    mov di, 3                       ; Retry count in DI
 .retry_read:
-    pusha
+    pusha                           ; Saves all registers, including ES and BX
     mov ah, 0x02                    ; Function: Read Sectors
     mov al, [sectors_this_read]     ; AL = sectors to read
     
-    ; CX, DX hold CHS. ES holds buffer segment. BX holds...
-    ; ah, PUSHA saves BX, so the ES:BX buffer pointer is fine.
-    ; We just need to restore DL (drive)
+    ; CX, DX hold CHS (from LBA conversion)
+    ; ES:BX hold buffer (e.g., 0x1000:0000, saved by pusha)
     
-    ; --- FIX: Reload DL (drive). DS is already 0. ---
+    ; Reload DL (drive). DS is 0.
     mov dl, [BOOT_DRIVE_ADDRESS]
     
     int 0x13
-    popa
+    popa                            ; Restores all registers (CX, DX, BX, etc.)
     jnc .read_success               ; Success!
     
     ; Read failed, reset disk and retry
     pusha
     
-    ; --- FIX: Reload DL (drive) for reset. DS is already 0. ---
+    ; Reload DL (drive) for reset. DS is 0.
     mov dl, [BOOT_DRIVE_ADDRESS]
 
     mov ah, 0x00
     int 0x13
     popa
     
-    dec bx                          ; Decrement retry counter in BX
+    dec di                          ; Decrement retry counter in DI
     jnz .retry_read
     
     jmp disk_error                  ; All retries failed
@@ -158,16 +157,17 @@ start:
     add [current_lba], ax
     adc word [current_lba+2], 0
     
-    ; Calculate new offset in paragraphs (bytes / 16)
-    ; (sectors_read * 512) / 16 = sectors_read * 32
+    ; Calculate new paragraph offset for ES
+    ; (sectors_read * 512 bytes/sector) / 16 bytes/paragraph = sectors_read * 32
     mov cx, 32
-    mul cx                          ; AX = sectors_read * 32 (paragraph offset)
+    mul cx                          ; AX = paragraph offset to add
     
-    push bx                         
+    ; Add this to ES. BX is always 0.
+    push bx                         ; Save BX (which is 0)
     mov bx, es                      
     add bx, ax                      
     mov es, bx                      
-    pop bx                          
+    pop bx                          ; Restore BX (back to 0)
     
     ; --- Check if we are done *at the end* of the loop ---
     cmp word [sectors_to_read], 0
