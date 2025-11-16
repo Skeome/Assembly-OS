@@ -8,7 +8,7 @@
 [BITS 16]
 [ORG 0x1000] ; We are loaded at physical address 0x1000
 
-KERNEL32_LOAD_S_EGMENT equ 0x1000  ; 16-bit segment (0x1000 * 16 = 0x10000)
+KERNEL32_LOAD_SEGMENT equ 0x1000  ; 16-bit segment (0x1000 * 16 = 0x10000)
 KERNEL32_JUMP_ADDRESS equ 0x10000 ; 32-bit physical address
 BOOT_DRIVE_ADDRESS equ 0x7DFD ; The physical address where boot.asm stored the drive ID
 
@@ -199,7 +199,7 @@ start:
 
     ; --- CHECKPOINT 4 ---
     mov al, '4'
-    call print_call
+    call print_char
 
     ; --- Load GDT ---
     lgdt [gdt_descriptor]
