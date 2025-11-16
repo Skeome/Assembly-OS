@@ -22,8 +22,8 @@ start:
     
     mov ah, 0x02                ; Function: "Read Sectors"
     mov al, 255                 ; Read max sectors (127.5 KB)
-    mov ch, 0                   ; Track 0
-    mov cl, 42                  ; Start at sector 42 (1-based)
+    mov ch, 1                   ; Track (Cylinder) 1
+    mov cl, 6                   ; Start at sector 6
     mov dh, 0                   ; Head 0
     
     ; Restore boot drive number
