@@ -1,10 +1,3 @@
-; ------------------------------------------------------------------
-; Yggdrasil OS - Stage 3 Kernel
-;
-; This is the 32-bit kernel, loaded at 0x10000.
-; It runs in 32-bit Protected Mode.
-; ------------------------------------------------------------------
-
 [BITS 32]
 org 0x10000 ; We are loaded at physical address 0x10000
 
@@ -13,10 +6,11 @@ kernel_start:
     ; This MUST be the first thing we do.
     ; We set up our own stack, trusting nothing from the bootloader.
     mov esp, 0x90000
-    cli                     ; Disable interrupts
-
+    
     ; --- 2. Initialize Interrupts ---
-    ; Now that we have a stack, we can make calls.
+    ; This is the most critical step. Now that we have a stack, we can
+    ; set up our exception handlers before doing anything else.
+    cli                     ; Disable interrupts while we set things up
     
     call idt_install        ; Load the IDT register (from idt.asm)
     call isrs_install       ; Populate the IDT with exception handlers (from isrs.asm)

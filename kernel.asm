@@ -6,11 +6,16 @@
 ;
 
 [BITS 16]
-[ORG 0x1000] ; We are now loaded at physical address 0x1000
+[ORG 0x1000] ; We are loaded at physical address 0x1000
 
 KERNEL32_LOAD_SEGMENT equ 0x1000  ; 16-bit segment (0x1000 * 16 = 0x10000)
 KERNEL32_JUMP_ADDRESS equ 0x10000 ; 32-bit physical address
 BOOT_DRIVE_ADDRESS equ 0x7DFD ; The physical address where boot.asm stored the drive ID
+
+print_char:                 ; Routine to print a character in AL
+    mov ah, 0x0E
+    int 0x10
+    ret
 
 start:
     cli                         ; Disable interrupts
@@ -41,6 +46,10 @@ start:
 .read_kernel_stage:
     pop cx                  ; Discard retry counter from stack
 
+    ; --- CHECKPOINT 1 ---
+    mov al, '1'
+    call print_char
+
 ; --- 2. Load the kernel from disk (with retries) ---
     mov word [sectors_to_read], 256
     mov dword [current_lba], 41
@@ -48,6 +57,10 @@ start:
     mov ax, KERNEL32_LOAD_SEGMENT   ; ES = 0x1000
     mov es, ax
     mov bx, 0x0000                  ; BX = 0x0000
+
+    ; --- CHECKPOINT 2 ---
+    mov al, '2'
+    call print_char
 
 .read_loop:
     ; --- Convert LBA to CHS ---
@@ -74,7 +87,7 @@ start:
     pop ax                          ; AX = Cylinder (10 bits, C9 C8 ... C0)
     mov ch, al                      ; CH = Cylinder low 8 bits (C7...C0)
     
-    mov dl, ah                      ; DL = Cylinder high 8 bits (000000 C9 C8)
+    mov dl, ah                      ; DL = Cylinder high 2 bits (000000 C9 C8)
     and dl, 0x03                    ; Mask to get only C9, C8
     shl dl, 6                       ; Shift to bits 7 and 6
     or cl, dl                       ; Combine with Sector
@@ -158,14 +171,26 @@ start:
     jmp .read_loop                  ; Read next chunk
 
 .a20_stage:
+    ; --- CHECKPOINT 3 ---
+    mov al, '3'
+    call print_char
+
     ; --- Use reliable BIOS call to enable A20 ---
     mov ax, 0x2401              ; Function: Enable A20 Gate
     int 0x15                    ; Call BIOS
     ; --- END FIX ---
 
+    ; --- CHECKPOINT 4 ---
+    mov al, '4'
+    call print_char
+
     ; --- FIX: LGDT needs the address relative to our ORG ---
-    lgdt [gdt_descriptor - 0x1000]
+    lgdt [gdt_descriptor]
     ; --- END FIX ---
+
+    ; --- CHECKPOINT 5 ---
+    mov al, '5'
+    call print_char
 
     ; Switch to protected mode by setting the PE bit in CR0
     mov eax, cr0
@@ -177,6 +202,14 @@ start:
     ; We use a 32-bit operand size prefix (0x66)
     db 0x66
     jmp 0x08:protected_mode_start
+
+    ; --- CHECKPOINT 6 ---
+    ; This code should NOT be reached. If it is, the jump failed.
+    ; This MUST be after the jmp, as it's 32-bit code.
+    ; We can't print from here as BIOS is not available.
+    ; So we'll just triple fault by loading a null IDT.
+    lidt [0]
+    hlt
 
 ; 16-bit helper routines (No longer needed)
 ; wait_for_input:
@@ -198,6 +231,11 @@ head_temp:          db 0
 current_lba:        dd 0
 
 disk_error:
+    ; --- CHECKPOINT 'E' (ERROR) ---
+    mov ah, 0x0E
+    mov al, 'E'
+    int 0x10
+
     ; Simple error handling: just halt.
     ; We are in a weird state (halfway to protected mode), so don't try video.
     cli
@@ -253,7 +291,7 @@ protected_mode_start:
     mov esp, 0x90000
 
     ; --- 3. Jump to the 32-bit kernel entry point ---
-    ; We loaded it at 0x10000, and our GDT has a base of 0,
+    ; We loaded it at 0x10000, and our GDT has a- 0,
     ; so we can just jump directly to that address.
     jmp KERNEL32_JUMP_ADDRESS
 
