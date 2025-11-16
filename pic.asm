@@ -56,8 +56,10 @@ PIC_remap:
     ; write drivers for them.
     mov al, 0xFF    ; 1 = masked/disabled
     out PIC1_DATA, al
+    call io_wait
     out PIC2_DATA, al
-    
+    call io_wait
+
     pop eax
     ret
 

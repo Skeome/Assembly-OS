@@ -8,7 +8,7 @@
 [BITS 16]
 [ORG 0x1000] ; We are now loaded at physical address 0x1000
 
-KERNEL_ENTRY_POINT equ 0x10000 ; Address where we will load the 32-bit kernel
+KERNEL_ENTRY_POINT equ 0x01000 ; Address where we will load the 32-bit kernel
 BOOT_DRIVE_ADDRESS equ 0x7DFD ; The physical address where boot.asm stored the drive ID
 
 start:
