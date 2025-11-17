@@ -17,31 +17,44 @@ sectors_to_read:    dw 0
 sectors_this_read:  db 0
 head_temp:          db 0
 current_lba:        dd 0
-
+disk_error_code:    db 0          ; Stores AH from int 0x13 failure
 
 print_char:                 ; Routine to print a character in AL
     mov ah, 0x0E
     int 0x10
     ret
 
+; Utility to print AH as a single hex digit (0-F) for debugging
+print_hex_digit:
+    push ax
+    push bx
+    push cx
+    
+    ; Get last 4 bits of AL (which holds AH from error path)
+    and al, 0x0F
+    cmp al, 0x09
+    jbe .is_digit
+    add al, 0x07   ; A-F needs an offset of 7 from 9 (A is 10, 'A' is 65. 10 + 7 = 17, 17+48 = 65)
+.is_digit:
+    add al, 0x30   ; Add '0' ASCII offset
+    call print_char
+    
+    pop cx
+    pop bx
+    pop ax
+    ret
+
 start:
     cli                         ; Disable interrupts
     
-    xor dx, dx                  ; Clear DX, including DL (drive)
-
     ; --- Set up the stack and segment registers ---
-    ; We are loaded at 0x1000. We must set up our own stack
-    ; before we can call any interrupts (like int 0x13).
-    ; We will set the stack to grow down from our load address.
-    
     xor ax, ax                  ; AX = 0
     mov ds, ax                  ; DS = 0 (for accessing data by physical address)
-    mov es, ax                  ; ES = 0 (for... just in case)
+    mov es, ax                  ; ES = 0
     mov ss, ax                  ; SS = 0
     mov sp, 0x9000              ; Set stack pointer to a safe place (9000h)
     
     sti                         ; Re-enable interrupts
-
 
     ; Load drive ID. DS is already 0, so we can access 0x7DFD directly.
     mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID saved by stage 1
@@ -51,9 +64,11 @@ start:
 .reset_loop:
     push cx
     mov ah, 0x00            ; Function 0x00: Reset Disk System
-    ; DL (drive) was loaded up top
     int 0x13
     jnc .read_kernel_stage  ; If carry flag is clear, success!
+    
+    ; Save error code and try again
+    mov [disk_error_code], ah
     pop cx
     loop .reset_loop        ; If carry flag was set (error), try again.
 
@@ -82,31 +97,28 @@ start:
 .read_loop:
     ; --- Convert LBA to CHS ---
     
-    ; --- FIX: Be explicit about 32-bit divide ---
+    ; Explicit 32-bit divide preparation
     xor edx, edx                    ; Clear high 32-bits of EDX:EAX
     mov dx, word [current_lba+2]    ; dx = high word of LBA
     mov ax, word [current_lba]      ; ax = low word of LBA
     
     mov di, 36                      ; 18 sectors/track * 2 heads
-    div di                          ; 32-bit EDX:EAX / 16-bit DI
-                                    ; AX = Cylinder, DX = Remainder (Temp)
+    div di                          ; AX = Cylinder, DX = Remainder (Temp)
     
-    push ax                         ; Save Cylinder (in AX)
+    push ax                         ; Save Cylinder (AX)
     
     mov ax, dx                      ; Remainder (Temp) into AX
     xor dx, dx                      ; Zero DX for 16-bit division
     mov di, 18                      ; 18 sectors/track
-    div di                          ; 16-bit AX / 16-bit DI
-                                    ; Quotient -> AX (Head)
-                                    ; Remainder -> DX (Sector-1)
+    div di                          ; AX = Head, DX = Sector-1
 
-    ; --- This was the bug. Results are in AX (Head) and DX (Sector-1) ---
-    mov byte [head_temp], al        ; AL is Head (from AX)
+    ; --- Use results: Head in AL, Sector-1 in DL ---
+    mov byte [head_temp], al        ; AL is Head
     inc dx                          ; Increment 16-bit remainder (Sector-1)
     mov cl, dl                      ; CL = Sector (1-based)
     
     pop ax                          ; AX = Cylinder (10 bits, C9 C8 ... C0)
-    mov ch, al                      ; CH = C'ylinder low 8 bits (C7...C0)
+    mov ch, al                      ; CH = Cylinder low 8 bits (C7...C0)
     
     mov dl, ah                      ; DL = Cylinder high 2 bits (000000 C9 C8)
     and dl, 0x03                    ; Mask to get only C9, C8
@@ -134,17 +146,19 @@ start:
     ; --- Attempt Read (with retries) ---
     mov di, 3                       ; Retry count in DI
 .retry_read:
-    pusha                           ; Saves all registers (ES, BX, CX, DX)
+    pusha                           ; Saves all registers
     mov ah, 0x02                    ; Function: Read Sectors
     mov al, [sectors_this_read]     ; AL = sectors to read
     
     ; DL (drive) needs to be reloaded (it was clobbered by CHS math)
     mov dl, [BOOT_DRIVE_ADDRESS]
     
-    ; ES:BX, CX, DX were set before pusha
-    
     int 0x13
-    popa                            ; Restores all registers
+    
+    ; Check AH for the status code after the interrupt
+    mov byte [disk_error_code], ah
+    
+    popa                            ; Restores all registers (BX, CX, DX are restored with CHS params)
     jnc .read_success               ; Success!
     
     ; Read failed, reset disk and retry
@@ -160,6 +174,11 @@ start:
     ; --- Read failed after all retries ---
     mov al, 'F'
     call print_char
+    
+    ; Print the error code AH (only low byte needed)
+    mov al, [disk_error_code]
+    call print_hex_digit
+    
     jmp disk_error                  
 
 .read_success:
@@ -173,7 +192,7 @@ start:
     
     ; Calculate new paragraph offset for ES
     mov cx, 32
-    mul cx                          ; AX = paragraph offset to add (DX is clobbered)
+    mul cx                          ; AX = paragraph offset to add
     
     push bx                         ; Save BX (which is 0)
     mov bx, es                      
@@ -191,11 +210,10 @@ start:
     mov al, '3'
     call print_char
 
-    ; --- Use reliable BIOS call to enable A20 ---
-    mov ah, 0x0C                ; Function 0Ch: Set A20 Gate Status
-    mov al, 0x01                ; Enable A20 Gate
+    ; --- Use reliable BIOS call 0x15, AX=0x2402 to enable A20 ---
+    mov ax, 0x2402              ; Function 2402h: Enable A20 Gate
     int 0x15                    ; Call BIOS
-    jc disk_error               ; Jump if error (e.g., function not supported)
+    jc disk_error               ; Jump if error 
 
     ; --- CHECKPOINT 4 ---
     mov al, '4'
@@ -203,6 +221,9 @@ start:
 
     ; --- Load GDT ---
     lgdt [gdt_descriptor]
+
+    mov ax, 0x10  ; The Data Segment Selector
+    mov ss, ax    ; Set the Stack Segment to a valid selector
 
     ; --- CHECKPOINT 5 ---
     mov al, '5'
@@ -286,10 +307,6 @@ protected_mode_start:
 
     ; --- 3. Jump to the 32-bit kernel entry point ---
     jmp KERNEL32_JUMP_ADDRESS
-
-    ; We should never get here
-    cli
-    hlt
 
 ; --- Padding ---
 ; Pad the rest of a 512-byte sector

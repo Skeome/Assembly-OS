@@ -2,6 +2,7 @@
 org 0x10000 ; We are loaded at physical address 0x10000
 
 kernel_start:
+fninit      ; Initialize FPU
     ; --- 1. Setup a proper stack ---
     ; This MUST be the first thing we do.
     ; We set up our own stack, trusting nothing from the bootloader.
@@ -11,16 +12,18 @@ kernel_start:
     ; This is the most critical step. Now that we have a stack, we can
     ; set up our exception handlers before doing anything else.
     cli                     ; Disable interrupts while we set things up
-    
+
+    call PIC_remap          ; Remap the PIC controllers (from pic.asm)
     call idt_install        ; Load the IDT register (from idt.asm)
     call isrs_install       ; Populate the IDT with exception handlers (from isrs.asm)
-    call PIC_remap          ; Remap the PIC controllers (from pic.asm)
+    
     
     ; --- 3. Clear the screen ---
     ; Video memory is at 0xB8000. Our GDT gives us flat 4GB
     ; access, so we can just write there.
     mov edi, 0xB8000
     mov ecx, 80 * 25
+    xor eax, eax
     mov ax, 0x0F20          ; ' ' (space) on White/Black
     rep stosw               ; Fill the screen
     
