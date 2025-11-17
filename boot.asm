@@ -36,7 +36,10 @@ start:
     pop cx
     loop .reset_loop        ; If carry flag was set (error), try again.
     
-    jmp disk_error          ; If all retries fail, then show error.
+    ; If all retries fail, then show error.
+    mov si, msg_disk_error_reset
+    call print_string_halt
+    jmp start
 
 .load_stage2:
     pop cx ; Discard the 'cx' value from the stack (we succeeded)
@@ -69,29 +72,43 @@ start:
     pop cx
     loop .read_loop         ; Try reading again
     
-    jmp disk_error          ; If all retries fail, show error.
+    ; If all retries fail, show error.
+    mov si, msg_disk_error_load
+    call print_string_halt
+    jmp start
 
 .jump_to_stage2:
     ; --- 3. Jump to the loaded kernel ---
     jmp KERNEL_LOAD_SEGMENT:KERNEL_LOAD_OFFSET
 
-; Error handling
-disk_error:
-    mov si, msg_disk_error
-print_string:
-    mov ah, 0x0E            ; BIOS teletype output
+; --------------------------------------
+; Utilities and Error Handling
+; --------------------------------------
+
+; Utility to print a character in AL
+print_char:                 
+    mov ah, 0x0E
+    int 0x10
+    ret
+
+; Utility to print a string pointed to by SI, then halt the CPU
+print_string_halt:
+    pusha
 .loop:
     lodsb                   ; Load character from [SI] into AL
     cmp al, 0
     je .halt
-    int 0x10                ; Call BIOS video interrupt
+    call print_char
     jmp .loop
 .halt:
+    popa
     cli
     hlt
+    jmp $ ; Infinite loop just in case
 
 ; --- Data ---
-msg_disk_error: db 'Disk read error!', 0
+msg_disk_error_reset: db 'Disk reset error! Halting.', 0
+msg_disk_error_load:  db 'Kernel read error! Halting.', 0
 
 ; We need 512 bytes total. The magic number is 2 bytes at the end (510 and 511).
 ; We will put our boot drive ID at byte 509 (offset 0x1FD from 0x0000).

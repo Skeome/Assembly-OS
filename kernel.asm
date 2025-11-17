@@ -43,7 +43,21 @@ print_hex_digit:
     pop bx
     pop ax
     ret
-
+    
+; --- String Printing Utility ---
+; Expects string address in SI (DS:SI)
+print_string:
+    pusha
+.loop_str:
+    lodsb                   ; Load char from [SI] into AL and increment SI
+    cmp al, 0               ; Check for null terminator
+    je .done_str
+    call print_char
+    jmp .loop_str
+.done_str:
+    popa
+    ret
+    
 start:
     cli                         ; Disable interrupts
     
@@ -60,24 +74,12 @@ start:
     mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID saved by stage 1
     
     ; --- 1. Reset the disk controller (with retries) ---
-    mov cx, 3               ; Number of retries
-.reset_loop:
-    push cx
+    ; NOTE: We are removing the loop and error jump temporarily for debugging stability.
+    
     mov ah, 0x00            ; Function 0x00: Reset Disk System
     int 0x13
-    jnc .read_kernel_stage  ; If carry flag is clear, success!
     
-    ; Save error code and try again
-    mov [disk_error_code], ah
-    pop cx
-    loop .reset_loop        ; If carry flag was set (error), try again.
-
-    jmp disk_error          ; If all retries fail
-
-.read_kernel_stage:
-    pop cx                  ; Discard retry counter from stack
-
-    ; --- CHECKPOINT 1 ---
+    ; --- CHECKPOINT 1 (Primary Checkpoint) ---
     mov al, '1'
     call print_char
 
@@ -235,7 +237,7 @@ start:
 
     ; --- WAIT FOR KEYPRESS (16-bit) ---
     mov si, wait_msg_16bit
-    call print_string_and_halt
+    call print_string
     
     mov ah, 0x00                ; BIOS function 0x00: Wait for keypress
     int 0x16                    ; Waits here until a key is pressed.
@@ -263,32 +265,35 @@ disk_error:
     mov ah, 0x0E
     mov al, 'E'
     int 0x10
+    
+    mov si, msg_disk_error_generic ; Print generic error on failure
+    jmp print_string_and_halt
 
 print_string_and_halt:
-    ; Simple error handling: just halt.
-    ; This is a small helper function, so we'll push/pop used registers
+    ; Print routine for errors (expects string in SI)
     push ax
     push bx
     push cx
+    push si ; Save original SI, as print_string uses it
     
-.loop_str:
+.loop_str_halt:
     lodsb
     cmp al, 0
     je .halt_str
     call print_char
-    jmp .loop_str
+    jmp .loop_str_halt
     
 .halt_str:
+    pop si ; Restore SI before continuing to popa
     pop cx
     pop bx
     pop ax
     cli
     hlt
-    jmp disk_error
+    jmp $
 
 ; --- Global Descriptor Table (GDT) ---
 gdt_start:
-; ... (GDT definitions remain the same)
     ; Null descriptor (required)
     dq 0x0
 
@@ -322,6 +327,7 @@ gdt_descriptor:
 ; This section is now EMPTY. Execution jumps directly to KERNEL32_JUMP_ADDRESS (0x10000).
 
 msg_big_lba: db 'LBA too large for 16-bit read!', 0
+msg_disk_error_generic: db 'Disk I/O error during stage 2 load!', 0
 wait_msg_16bit: db 'Boot stage 2 complete (16-bit mode). Press any key to continue to 32-bit kernel...', 0
 
 ; --- Padding ---
