@@ -233,6 +233,17 @@ start:
     mov al, '6'
     call print_char
 
+    ; --- WAIT FOR KEYPRESS (16-bit) ---
+    mov si, wait_msg_16bit
+    call print_string_and_halt
+    
+    mov ah, 0x00                ; BIOS function 0x00: Wait for keypress
+    int 0x16                    ; Waits here until a key is pressed.
+
+    ; --- Setup 32-bit Stack Pointer (CRITICAL FIX) ---
+    ; Set 32-bit stack pointer (ESP) before enabling Protected Mode
+    mov esp, 0x90000            ; Set ESP to the high address used by kernel32.asm
+
     ; Switch to protected mode
     mov eax, cr0
     or eax, 0x1
@@ -255,12 +266,29 @@ disk_error:
 
 print_string_and_halt:
     ; Simple error handling: just halt.
+    ; This is a small helper function, so we'll push/pop used registers
+    push ax
+    push bx
+    push cx
+    
+.loop_str:
+    lodsb
+    cmp al, 0
+    je .halt_str
+    call print_char
+    jmp .loop_str
+    
+.halt_str:
+    pop cx
+    pop bx
+    pop ax
     cli
     hlt
     jmp disk_error
 
 ; --- Global Descriptor Table (GDT) ---
 gdt_start:
+; ... (GDT definitions remain the same)
     ; Null descriptor (required)
     dq 0x0
 
@@ -294,6 +322,7 @@ gdt_descriptor:
 ; This section is now EMPTY. Execution jumps directly to KERNEL32_JUMP_ADDRESS (0x10000).
 
 msg_big_lba: db 'LBA too large for 16-bit read!', 0
+wait_msg_16bit: db 'Boot stage 2 complete (16-bit mode). Press any key to continue to 32-bit kernel...', 0
 
 ; --- Padding ---
 ; Pad the rest of a 512-byte sector
