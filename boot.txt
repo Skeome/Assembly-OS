@@ -1,4 +1,4 @@
-     1                                  ; boot.asm - Stage 1 (LBA Read)
+     1                                  ; boot.asm - Stage 1 (Minimal LBA Read)
      2                                  ; Job: Load kernel.bin (Stage 2) into memory at 0x1000 using LBA.
      3                                  ;-----------------------------------------------------------------------------
      4                                  
@@ -7,118 +7,83 @@
      7                                  
      8                                  KERNEL_START_LBA        equ 0x01      ; LBA 1 (Sector 2 on disk)
      9                                  KERNEL_SECTORS_TO_READ  equ 40        ; 40 sectors (20KB for kernel.asm)
-    10                                  KERNEL_LOAD_SEGMENT     equ 0x0100    ; ES = 0x0100 (Physical address 0x1000)
-    11                                  KERNEL_LOAD_OFFSET      equ 0x0000    ; BX = 0x0000
+    10                                  KERNEL_LOAD_SEGMENT     equ 0x0100    ; Physical address 0x1000
+    11                                  KERNEL_LOAD_OFFSET      equ 0x0000    
     12                                  
     13                                  start:
     14 00000000 FA                          cli                     ; Disable interrupts
     15                                      
-    16                                      ; Setup segments (DS=ES=SS=0) and stack
+    16                                      ; 1. Setup Segments and Stack
     17 00000001 31C0                        xor ax, ax              
-    18 00000003 8ED8                        mov ds, ax              
-    19 00000005 8EC0                        mov es, ax              
-    20 00000007 8ED0                        mov ss, ax              
-    21 00000009 BC007B                      mov sp, 0x7B00          ; Use stack below bootloader (0x7C00)
+    18 00000003 8ED8                        mov ds, ax              ; DS=0
+    19 00000005 8EC0                        mov es, ax              ; ES=0
+    20 00000007 8ED0                        mov ss, ax              ; SS=0
+    21 00000009 BC007C                      mov sp, 0x7C00          ; Stack starts just below 0x7C00 (grows down)
     22                                  
-    23                                      ; Save boot drive ID (DL) to a safe location
+    23                                      ; Save boot drive ID (DL) to 0x7DFD
     24 0000000C 8816[FD01]                  mov [boot_drive_storage], dl
     25                                      
     26 00000010 FB                          sti                     ; Re-enable interrupts
     27                                  
-    28                                      ; --- 1. Reset the disk controller ---
-    29 00000011 B400                        mov ah, 0x00            ; Function 0x00: Reset Disk System
-    30 00000013 8A16[FD01]                  mov dl, [boot_drive_storage]
-    31 00000017 CD13                        int 0x13
-    32                                      
-    33                                      ; --- CHECKPOINT A: Disk Reset OK ---
-    34 00000019 B041                        mov al, 'A'
-    35 0000001B E84700                      call print_char
-    36                                  
-    37                                      ; --- 2. Load the kernel using LBA Read (AH=0x42) ---
-    38                                      
-    39                                      ; Setup Disk Address Packet (DAP)
-    40 0000001E BE[9800]                    mov si, dap_packet      ; DS:SI points to DAP (DS=0 ensures correct physical address)
-    41                                      
-    42                                      ; Set Buffer Address (0x0100:0x0000 -> 0x1000)
-    43 00000021 B80001                      mov ax, KERNEL_LOAD_SEGMENT
-    44 00000024 A3[9E00]                    mov [dap_buffer_segment], ax
-    45 00000027 C706[9C00]0000              mov word [dap_buffer_offset], KERNEL_LOAD_OFFSET
-    46                                      
-    47                                      ; Set LBA start and count
-    48 0000002D C706[9A00]2800              mov word [dap_sectors], KERNEL_SECTORS_TO_READ 
-    49 00000033 66C706[A000]010000-         mov dword [dap_lba_low], KERNEL_START_LBA    
-    49 0000003B 00                 
-    50                                      
-    51                                      ; --- The INT 0x13 / AH=0x42 Call (Load 40 sectors) ---
-    52 0000003C B442                        mov ah, 0x42            ; Function 0x42: Extended Read Sectors (LBA)
-    53 0000003E 8A16[FD01]                  mov dl, [boot_drive_storage]
-    54                                  
-    55 00000042 B280                        mov dl, 0x80           ; Use first hard disk for testing
-    56                                      
-    57 00000044 CD13                        int 0x13
+    28                                      ; 2. LBA Read Setup
+    29                                      
+    30                                      ; Setup Buffer Address (ES:BX = 0x0100:0x0000 -> 0x1000 physical)
+    31 00000011 B80001                      mov ax, KERNEL_LOAD_SEGMENT
+    32 00000014 8EC0                        mov es, ax
+    33 00000016 BB0000                      mov bx, KERNEL_LOAD_OFFSET
+    34                                      
+    35                                      ; Setup Disk Address Packet (DAP) at DS:SI (0x0000:0x7C98 in low memory)
+    36 00000019 BE[4C00]                    mov si, dap_packet
+    37                                      
+    38                                      ; Populate DAP with target values
+    39 0000001C C744022800                  mov word [si + 0x02], KERNEL_SECTORS_TO_READ ; dap_sectors (40)
+    40 00000021 895C04                      mov word [si + 0x04], bx                     ; dap_buffer_offset (0)
+    41 00000024 8C4406                      mov word [si + 0x06], es                     ; dap_buffer_segment (0x0100)
+    42 00000027 66C7440801000000            mov dword [si + 0x08], KERNEL_START_LBA      ; dap_lba_low (1)
+    43                                      
+    44                                      ; 3. Execute LBA Read (INT 0x13 / AH=0x42)
+    45 0000002F B442                        mov ah, 0x42            ; Extended Read Sectors
+    46 00000031 8A16[FD01]                  mov dl, [boot_drive_storage] ; Load original drive ID (usually 0x00)
+    47                                      
+    48 00000035 B280                        mov dl, 0x80            ; CRITICAL WORKAROUND: Use Hard Disk ID for LBA read in QEMU
+    49                                      
+    50 00000037 CD13                        int 0x13
+    51                                      
+    52 00000039 7304                        jnc .jump_to_stage2     ; If carry flag is clear, success!
+    53                                      
+    54                                      ; Read failed: Halt indefinitely
+    55 0000003B FA                          cli
+    56 0000003C F4                          hlt
+    57 0000003D EBFE                        jmp $
     58                                      
-    59 00000046 730B                        jnc .jump_to_stage2     ; If carry flag is clear, success!
+    59                                  .jump_to_stage2:
     60                                      
-    61                                      ; Read failed path
-    62 00000048 B045                        mov al, 'E'
-    63 0000004A E81800                      call print_char
-    64 0000004D BE[7A00]                    mov si, msg_disk_error_load
-    65 00000050 E81700                      call print_string_halt
-    66                                      
-    67                                  .jump_to_stage2:
-    68                                      ; --- CHECKPOINT C: Load complete ---
-    69 00000053 B043                        mov al, 'C'
-    70 00000055 E80D00                      call print_char
+    61                                      ; 4. Final Segment Setup (CRITICAL FIXES)
+    62                                      ; DS and ES must match the new code segment (0x0100) before the jump.
+    63 0000003F B80001                      mov ax, KERNEL_LOAD_SEGMENT
+    64 00000042 8ED8                        mov ds, ax              ; Set DS to 0x0100
+    65 00000044 8EC0                        mov es, ax              ; Set ES to 0x0100
+    66                                  
+    67                                      ; 5. Jump to the loaded kernel (Stage 2)
+    68 00000046 680001                      push KERNEL_LOAD_SEGMENT ; Pushes 0x0100 (CS) onto the stack
+    69 00000049 6A00                        push KERNEL_LOAD_OFFSET  ; Pushes 0x0000 (IP) onto the stack
+    70 0000004B CB                          retf                     ; Far Return/Jump to 0x0100:0x0000
     71                                  
-    72                                      ; --- CRITICAL FIX: Set DS and ES to the new segment (0x0100) ---
-    73 00000058 B80001                      mov ax, KERNEL_LOAD_SEGMENT
-    74 0000005B 8ED8                        mov ds, ax              ; Set DS to 0x0100
-    75 0000005D 8EC0                        mov es, ax              ; Set ES to 0x0100
-    76                                  
-    77                                      ; --- 3. Jump to the loaded kernel (FIXED: Using push/retf) ---
-    78 0000005F 680001                      push KERNEL_LOAD_SEGMENT ; Pushes 0x0100 (CS) onto the stack
-    79 00000062 6A00                        push KERNEL_LOAD_OFFSET  ; Pushes 0x0000 (IP) onto the stack
-    80 00000064 CB                          retf                     ; Performs a Far Return (effectively a Far Jump)
-    81                                  
-    82                                  ; --------------------------------------
-    83                                  ; Utilities, Data, and Padding
-    84                                  ; --------------------------------------
-    85                                  print_char:                 
-    86 00000065 B40E                        mov ah, 0x0E
-    87 00000067 CD10                        int 0x10
-    88 00000069 C3                          ret
-    89                                  
-    90                                  print_string_halt:
-    91 0000006A 60                          pusha
-    92                                  .loop:
-    93 0000006B AC                          lodsb                   
-    94 0000006C 3C00                        cmp al, 0
-    95 0000006E 7405                        je .halt
-    96 00000070 E8F2FF                      call print_char
-    97 00000073 EBF6                        jmp .loop
-    98                                  .halt:
-    99 00000075 61                          popa
-   100 00000076 FA                          cli
-   101 00000077 F4                          hlt
-   102 00000078 EBFE                        jmp $
-   103                                  
-   104                                  ; --- Data ---
-   105 0000007A 312D4B65726E656C20-     msg_disk_error_load:  db '1-Kernel read error! Halting.', 0
-   105 00000083 72656164206572726F-
-   105 0000008C 72212048616C74696E-
-   105 00000095 672E00             
-   106                                  
-   107                                  ; Disk Address Packet (DAP) Structure for AH=0x42 (16 bytes)
-   108                                  dap_packet:
-   109 00000098 10                      dap_size:           db 0x10         
-   110 00000099 00                      dap_reserved:       db 0x00         
-   111 0000009A 0000                    dap_sectors:        dw 0x0000       
-   112 0000009C 0000                    dap_buffer_offset:  dw 0x0000       
-   113 0000009E 0000                    dap_buffer_segment: dw 0x0000       
-   114 000000A0 00000000                dap_lba_low:        dd 0x00000000   
-   115 000000A4 00000000                dap_lba_high:       dd 0x00000000   
-   116                                  
-   117                                  ; Padding and Signature
-   118 000000A8 00<rep 155h>            times 510 - ($ - $$) - 1 db 0 
-   119 000001FD 00                      boot_drive_storage: db 0        ; Store drive ID here (at 0x7DFD)
-   120 000001FE 55AA                    dw 0xAA55                       ; Boot signature
+    72                                  ; --------------------------------------
+    73                                  ; Data and Padding
+    74                                  ; --------------------------------------
+    75                                  
+    76                                  ; Disk Address Packet (DAP) Structure for AH=0x42 (16 bytes)
+    77                                  dap_packet:
+    78 0000004C 10                      dap_size:           db 0x10         ; 0x00 (Size)
+    79 0000004D 00                      dap_reserved:       db 0x00         ; 0x01
+    80 0000004E 0000                    dap_sectors:        dw 0x0000       ; 0x02 (Filled by code)
+    81 00000050 0000                    dap_buffer_offset:  dw 0x0000       ; 0x04 (Filled by code)
+    82 00000052 0000                    dap_buffer_segment: dw 0x0000       ; 0x06 (Filled by code)
+    83 00000054 00000000                dap_lba_low:        dd 0x00000000   ; 0x08 (Filled by code)
+    84 00000058 00000000                dap_lba_high:       dd 0x00000000   ; 0x0C
+    85                                  
+    86                                  ; Padding and Signature
+    87 0000005C 00<rep 1A1h>            times 510 - ($ - $$) - 1 db 0 
+    88 000001FD 00                      boot_drive_storage: db 0        ; Store drive ID here (at 0x7DFD)
+    89 000001FE 55AA                    dw 0xAA55                       ; Boot signature
