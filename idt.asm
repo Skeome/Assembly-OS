@@ -33,6 +33,7 @@ idt_descriptor:
 idt_set_gate:
     push edi
     push eax
+    push ebx
 
     ; edi = idt + (interrupt_number * 8)
     shl eax, 3  ; eax = interrupt_number * 8
@@ -53,6 +54,7 @@ idt_set_gate:
     ; Set flags (1 byte)
     mov [edi + 5], dl
 
+    pop ebx
     pop eax
     pop edi
     ret

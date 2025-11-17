@@ -6,7 +6,7 @@ fninit      ; Initialize FPU
     ; --- 1. Setup a proper stack ---
     ; This MUST be the first thing we do.
     ; We set up our own stack, trusting nothing from the bootloader.
-    mov esp, 0x90000
+    ;mov esp, 0x90000
     
     ; --- 2. Initialize Interrupts ---
     ; This is the most critical step. Now that we have a stack, we can

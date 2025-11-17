@@ -291,6 +291,8 @@ gdt_descriptor:
 [BITS 32]
 protected_mode_start:
 
+    mov esp, 0x90000  ; Set up a safe stack
+
     ; --- 1. Set up 32-bit segment registers ---
     ; CS is already 0x08 from our far jump.
     ; Now we set all data segments to 0x10.
@@ -303,7 +305,7 @@ protected_mode_start:
 
     ; --- 2. Set up the stack ---
     ; Set the stack pointer to a high memory address
-    mov esp, 0x90000
+    ;mov esp, 0x90000
 
     ; --- 3. Jump to the 32-bit kernel entry point ---
     jmp KERNEL32_JUMP_ADDRESS
