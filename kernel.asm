@@ -25,12 +25,13 @@ dap_buffer_segment: dw 0x0000
 dap_lba_low:        dd 0x00000000
 dap_lba_high:       dd 0x00000000
 
-; --- Data for read loop ---
+; --- Data for read loop (DAP) ---
 sectors_to_read:    dw 0
 sectors_this_read:  db 0
 disk_error_code:    db 0
 current_lba:        dd 0          ; LBA counter
 
+; --- UTILITIES (Kept here for compilation consistency) ---
 print_char:                 ; Routine to print a character in AL
     mov ah, 0x0E
     int 0x10
@@ -69,25 +70,30 @@ print_string:
     ret
     
 start:
-    cli
+    cli                         ; Disable interrupts first
     
-    ; --- Set up the stack and segment registers ---
+    ; --- Set up the stack and segment registers (CRITICAL FIRST STEP) ---
     xor ax, ax                  
-    mov ds, ax                  ; DS=0 for accessing high memory data (GDT, DAP table)
+    mov ds, ax                  ; DS=0 for accessing DAP/GDT (Memory below 64KB)
     mov es, ax                  ; ES=0 initially
     mov ss, ax                  ; SS=0
-    mov sp, 0x9000              ; Set main stack pointer 
-    
-    ; --- CHECKPOINT 1: Kernel Start (Should print immediately if boot.asm succeeded) ---
-    mov al, '1'
-    call print_char
+    mov sp, 0x9000              ; Set main stack pointer (0x9000)
     
     sti                         ; Re-enable interrupts
 
+    ; --- CHECKPOINT 1: Kernel Start (Now safe after stack/segments initialized) ---
+    mov ah, 0x0E
+    mov al, '1'
+    int 0x10
+    
     ; Load drive ID 
     mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID from 0x7DFD
     
-    ; --- 2. Initialize LBA Read Parameters for KERNEL32 ---
+    ; --- CHECKPOINT 2: Read Setup Complete ---
+    mov al, '2'
+    call print_char
+    
+    ; --- 3. Initialize LBA Read Parameters for KERNEL32 (Load from LBA 41) ---
     mov word [sectors_to_read], KERNEL32_SECTORS_TO_READ
     mov dword [current_lba], KERNEL_START_LBA_32 
     
@@ -95,10 +101,6 @@ start:
     mov es, ax
     mov bx, 0x0000                  ; Offset 0
     
-    ; --- CHECKPOINT 2: Read Setup Complete ---
-    mov al, '2'
-    call print_char
-
 .read_loop:
     cmp word [sectors_to_read], 0
     jz .a20_stage                   ; All sectors read, jump to A20
