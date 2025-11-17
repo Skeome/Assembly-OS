@@ -31,7 +31,7 @@ idt_descriptor:
 idt_set_gate:
     push edi
     push eax
-    push ebp ; Use EBP as a temporary register
+    push ebp ; Use EBP as a temporary register to protect EBX
 
     ; edi = idt + (interrupt_number * 8)
     shl eax, 3  ; eax = interrupt_number * 8

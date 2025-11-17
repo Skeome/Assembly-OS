@@ -9,10 +9,21 @@
 org 0x10000 ; We are loaded at physical address 0x10000
 
 kernel_start:
-    fninit      ; FIX: Initialize FPU first thing in 32-bit code
+    ; --- 0. CRITICAL 32-BIT SETUP (Moved from kernel.asm) ---
+    mov esp, 0x90000    ; Set up a safe stack immediately
+    
+    ; CS is already 0x08 from the RETF.
+    ; Set data segments to 0x10.
+    mov ax, 0x10    ; 0x10 is our Data Segment selector
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax      ; SS is reset for clarity/safety
+
+    fninit      ; FIX: Initialize FPU 
     
     ; --- 1. Initialize Interrupts (CORRECT ORDER) ---
-    ; We rely on ESP being set in kernel.asm
     cli                     ; Disable interrupts while we set things up
 
     call PIC_remap          ; 1. Remap the PIC controllers (fixes IRQ race)
@@ -52,7 +63,6 @@ kernel_start:
 welcome_msg: db 'YGGdrasil: Kernel loaded. Interrupts enabled. Waiting for input...', 0
 
 ; --- Include our Interrupt Descriptor Table and Interrupt Service Routines ---
-; The data and code included here must fit within the padding.
 %include "idt.asm"
 %include "isrs.asm"
 %include "pic.asm"

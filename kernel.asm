@@ -238,13 +238,12 @@ start:
     or eax, 0x1
     mov cr0, eax
 
-    ; Far jump
-    db 0x66
-    jmp 0x08:protected_mode_start
-
-    ; --- CHECKPOINT 7 ---
-    lidt [0]
-    hlt
+    ; --- CRITICAL FIX: Far Return directly to KERNEL32_JUMP_ADDRESS (0x10000) ---
+    ; We are removing the intermediate function and jumping straight to kernel_start.
+    
+    push dword KERNEL32_JUMP_ADDRESS ; Pushes 0x10000 (EIP)
+    push dword 0x08                  ; Pushes 0x08 (CS Selector)
+    retf                             ; Atomically loads EIP=0x10000, CS=0x08, and starts execution at kernel32.asm
 
 disk_error:
     ; --- CHECKPOINT 'E' (ERROR) ---
@@ -288,24 +287,12 @@ gdt_descriptor:
 ; ==================================================================
 ; We are now in 32-bit Protected Mode!
 ; ==================================================================
+; This section is now EMPTY. Execution jumps directly to KERNEL32_JUMP_ADDRESS (0x10000).
 [BITS 32]
-protected_mode_start:
-
-    ; --- 1. Set up the stack pointer (MUST BE FIRST) ---
-    mov esp, 0x90000  ; Set up a safe stack
-
-    ; --- 2. Set up 32-bit segment registers ---
-    ; CS is already 0x08 from our far jump.
-    ; Now we set all data segments to 0x10.
-    mov ax, 0x10    ; 0x10 is our Data Segment selector
-    mov ds, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax      ; Set up the stack segment
-
-    ; --- 3. Jump to the 32-bit kernel entry point ---
-    jmp KERNEL32_JUMP_ADDRESS
+; The label 'protected_mode_start' is no longer used for entry, but we keep the [BITS 32] block structure.
+; If the assembler requires a label to satisfy the original retf code, 
+; we can put a temporary one here, but since the retf is pushing 0x10000, 
+; we are safe to remove the jump target.
 
 ; --- Padding ---
 ; Pad the rest of a 512-byte sector
