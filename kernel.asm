@@ -95,7 +95,6 @@ start:
     call print_char
 
 .read_loop:
-    ; --- CRITICAL FIX: Robust LBA to CHS (16-bit safe) ---
     ; LBA is currently in [current_lba]
     
     mov ax, word [current_lba]      ; AX = LBA (low 16 bits)
@@ -176,7 +175,6 @@ start:
     mov al, 'F'
     call print_char
     
-    ; Print the error code AH (only low byte needed)
     mov al, [disk_error_code]
     call print_hex_digit
     
@@ -188,8 +186,7 @@ start:
     xor ah, ah                      ; AX = sectors we just read
     
     sub [sectors_to_read], ax       ; Decrease remaining count
-    
-    ; --- FIX: Update LBA without 32-bit prefix on ADD, use ADC ---
+
     add word [current_lba], ax      ; Add AX (sectors read) to current_lba (low 16)
     adc word [current_lba+2], 0     ; Add carry to current_lba (high 16)
     
@@ -213,7 +210,7 @@ start:
     mov al, '3'
     call print_char
 
-    ; --- Use reliable BIOS call 0x15, AX=0x2402 to enable A20 ---
+    ; --- Enable A20 Gate ---
     mov ax, 0x2402              ; Function 2402h: Enable A20 Gate
     int 0x15                    ; Call BIOS
     jc disk_error               ; Jump if error 
@@ -241,7 +238,6 @@ start:
     or eax, 0x1
     mov cr0, eax
 
-    ; --- CRITICAL FIX: Far Return directly to KERNEL32_JUMP_ADDRESS (0x10000) ---
     
     push dword KERNEL32_JUMP_ADDRESS ; Pushes 0x10000 (EIP)
     push dword 0x08                  ; Pushes 0x08 (CS Selector)

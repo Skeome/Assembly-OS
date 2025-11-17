@@ -29,8 +29,8 @@ fault_msg: db 'KERNEL PANIC: CPU EXCEPTION. SYSTEM HALTED.', 0
 [GLOBAL isr%1]
 isr%1:
     cli
-    push dword 0    ; FIX: Push 32-bit dummy error code (4 bytes)
-    push dword %1   ; FIX: Push 32-bit interrupt number (4 bytes)
+    push dword 0    ; Push 32-bit dummy error code (4 bytes)
+    push dword %1   ; Push 32-bit interrupt number (4 bytes)
     jmp isr_common_stub
 %endmacro
 
@@ -39,7 +39,7 @@ isr%1:
 isr%1:
     cli
     ; Error code is already on the stack (Pushed as 32-bit by CPU)
-    push dword %1   ; FIX: Push 32-bit interrupt number (4 bytes)
+    push dword %1   ; Push 32-bit interrupt number (4 bytes)
     jmp isr_common_stub
 %endmacro
 
@@ -135,6 +135,7 @@ isrs_install:
     mov ebx, isr3
     mov eax, 3
     call idt_set_gate
+
     mov ebx, isr4
     mov eax, 4
     call idt_set_gate

@@ -9,7 +9,7 @@
 org 0x10000 ; We are loaded at physical address 0x10000
 
 kernel_start:
-    ; --- 0. CRITICAL 32-BIT SETUP (Moved from kernel.asm) ---
+    ; --- 0. 32-BIT SETUP (Moved from kernel.asm) ---
     mov esp, 0x90000    ; Set up a safe stack immediately
     
     ; CS is already 0x08 from the RETF.
@@ -21,9 +21,9 @@ kernel_start:
     mov gs, ax
     mov ss, ax      ; SS is reset for clarity/safety
 
-    fninit      ; FIX: Initialize FPU 
-    
-    ; --- 1. Initialize Interrupts (CORRECT ORDER) ---
+    fninit      ; Initialize FPU
+
+    ; --- 1. Initialize Interrupts ---
     cli                     ; Disable interrupts while we set things up
 
     call PIC_remap          ; 1. Remap the PIC controllers (fixes IRQ race)
@@ -34,15 +34,16 @@ kernel_start:
     ; --- 2. Clear the screen ---
     mov edi, 0xB8000
     mov ecx, 80 * 25
-    xor eax, eax            ; FIX: Clear all 32 bits of EAX
+    xor eax, eax            ; Clear all 32 bits of EAX
     mov ax, 0x0F20          ; ' ' (space) on White/Black
     rep stosw               ; Fill the screen
     
     ; --- 3. Print a 32-bit welcome message ---
     mov esi, welcome_msg
     mov edi, 0xB8000        ; Top-left
-    
-.print_loop:
+
+.print_loop:        ;NOTE - Double check values to see why "8(" is printed infinitely until shutdown
+
     lodsb                   ; Load char from [esi] into al
     cmp al, 0
     je .done
