@@ -1,0 +1,83 @@
+     1                                  ; boot.asm - Stage 1 (Minimal LBA Read - Drive ID Fixed)
+     2                                  ; Job: Load kernel.bin (Stage 2) into memory at 0x1000 using LBA.
+     3                                  ;-----------------------------------------------------------------------------
+     4                                  
+     5                                  [ORG 0x7C00]
+     6                                  [BITS 16]
+     7                                  
+     8                                  KERNEL_START_LBA        equ 0x01      ; LBA 1
+     9                                  KERNEL_SECTORS_TO_READ  equ 40        
+    10                                  KERNEL_LOAD_SEGMENT     equ 0x0100    ; ES = 0x0100 (Physical address 0x1000)
+    11                                  KERNEL_LOAD_OFFSET      equ 0x0000    
+    12                                  
+    13                                  ; Disk Address Packet (DAP) definition placed early to stabilize offsets
+    14                                  dap_packet:
+    15 00000000 10                      dap_size:           db 0x10         ; 0x00: Packet size
+    16 00000001 00                      dap_reserved:       db 0x00         ; 0x01
+    17 00000002 2800                    dap_sectors:        dw KERNEL_SECTORS_TO_READ ; 0x02: Sectors to read (40)
+    18 00000004 0000                    dap_buffer_offset:  dw KERNEL_LOAD_OFFSET     ; 0x04: Load offset (0x0000)
+    19 00000006 0001                    dap_buffer_segment: dw KERNEL_LOAD_SEGMENT    ; 0x06: Load segment (0x0100)
+    20 00000008 01000000                dap_lba_low:        dd KERNEL_START_LBA       ; 0x08: LBA Start (1)
+    21 0000000C 00000000                dap_lba_high:       dd 0x00000000             ; 0x0C
+    22                                  
+    23                                  ; Padding and Drive ID Storage
+    24 00000010 00<rep 1EDh>            times 510 - ($ - $$) - 1 db 0 
+    25 000001FD 00                      boot_drive_storage: db 0        ; Store drive ID here (at 0x7DFD)
+    26 000001FE 55AA                    dw 0xAA55                       ; Boot signature
+    27                                  
+    28                                  
+    29                                  start:
+    30 00000200 FA                          cli                     ; Disable interrupts
+    31                                      
+    32                                      ; 1. Setup Segments and Stack
+    33 00000201 31C0                        xor ax, ax              
+    34 00000203 8ED8                        mov ds, ax              ; DS=0 for accessing DAP
+    35 00000205 8EC0                        mov es, ax              
+    36 00000207 8ED0                        mov ss, ax              
+    37 00000209 BC007C                      mov sp, 0x7C00          ; Stack starts just below 0x7C00
+    38                                  
+    39                                      ; Save boot drive ID (DL)
+    40 0000020C 8816[FD01]                  mov [boot_drive_storage], dl
+    41                                      
+    42 00000210 FB                          sti                     ; Re-enable interrupts
+    43                                  
+    44                                      ; 2. Execute LBA Read (INT 0x13 / AH=0x42)
+    45                                      
+    46                                      ; Setup Buffer Address (ES:BX = 0x0100:0x0000 -> 0x1000 physical)
+    47 00000211 B80001                      mov ax, KERNEL_LOAD_SEGMENT
+    48 00000214 8EC0                        mov es, ax
+    49 00000216 BB0000                      mov bx, KERNEL_LOAD_OFFSET
+    50                                      
+    51                                      ; Setup DS:SI to point to the DAP structure (0x0000:dap_packet)
+    52 00000219 BE[0000]                    mov si, dap_packet
+    53                                      
+    54 0000021C B442                        mov ah, 0x42            ; Extended Read Sectors
+    55                                      
+    56                                      ; --- The Fix: Temporarily use the Hard Disk ID for the AH=0x42 call ---
+    57                                      ; --- We trust that the floppy BIOS should handle the ID conversion internally. ---
+    58 0000021E B280                        mov dl, 0x80
+    59                                      
+    60 00000220 CD13                        int 0x13
+    61                                      
+    62                                      ; Check drive ID again (in case BIOS reset it)
+    63 00000222 8A16[FD01]                  mov dl, [boot_drive_storage] 
+    64                                      
+    65 00000226 7304                        jnc .jump_to_stage2     ; If carry flag is clear, success!
+    66                                      
+    67                                      ; Read failed: Halt indefinitely
+    68 00000228 FA                          cli
+    69 00000229 F4                          hlt
+    70 0000022A EBFE                        jmp $
+    71                                      
+    72                                  .jump_to_stage2:
+    73                                      
+    74                                      ; 3. Final Segment Setup (CRITICAL FIXES)
+    75                                      ; DS and ES must match the new code segment (0x0100) before the jump.
+    76 0000022C B80001                      mov ax, KERNEL_LOAD_SEGMENT
+    77 0000022F 8ED8                        mov ds, ax              ; Set DS to 0x0100
+    78 00000231 8EC0                        mov es, ax              ; Set ES to 0x0100
+    79                                  
+    80                                      ; 4. Jump to the loaded kernel (Stage 2)
+    81 00000233 680001                      push KERNEL_LOAD_SEGMENT ; Pushes 0x0100 (CS) onto the stack
+    82 00000236 6A00                        push KERNEL_LOAD_OFFSET  ; Pushes 0x0000 (IP) onto the stack
+    83 00000238 CB                          retf                     ; Far Return/Jump to 0x0100:0x0000
