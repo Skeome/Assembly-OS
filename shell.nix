@@ -2,15 +2,14 @@
 
 pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
-    nasm
-    gcc
-    SDL2
-    pkg-config
+    coreutils
     gdb
+    nasm
+    qemu
   ];
 
   shellHook = ''
     echo "Welcome to your Assembly Development Shell!"
-    echo "Available tools: nasm, gcc, SDL2, pkg-config, gdb"
+    echo "Available tools: coreutils, gdb, nasm, qemu"
   '';
 }
