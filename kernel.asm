@@ -16,7 +16,7 @@ BOOT_DRIVE_ADDRESS equ 0x7DFD ; The physical address where boot.asm stored the d
 sectors_to_read:    dw 0
 sectors_this_read:  db 0
 head_temp:          db 0
-current_lba:        dd 0
+current_lba:        dd 0          ; Still 32-bit for the count
 disk_error_code:    db 0          ; Stores AH from int 0x13 failure
 
 print_char:                 ; Routine to print a character in AL
@@ -95,39 +95,89 @@ start:
     call print_char
 
 .read_loop:
-    ; --- Convert LBA to CHS ---
+    ; --- Convert LBA (32-bit) to CHS (16-bit safe) ---
+    ; LBA is < 1440 sectors, so AX (16 bits) can hold the LBA value, avoiding EAX/EDX complexity.
     
-    ; Explicit 32-bit divide preparation
-    xor edx, edx                    ; Clear high 32-bits of EDX:EAX
-    mov dx, word [current_lba+2]    ; dx = high word of LBA
-    mov ax, word [current_lba]      ; ax = low word of LBA
+    push dx                         ; Save DX since we will use it for calculations
     
-    mov di, 36                      ; 18 sectors/track * 2 heads
-    div di                          ; AX = Cylinder, DX = Remainder (Temp)
+    ; Load the 32-bit LBA into AX (low 16) and DX (high 16)
+    mov dx, word [current_lba+2]
+    mov ax, word [current_lba]
     
-    push ax                         ; Save Cylinder (AX)
+    ; Since LBA is small (max 1440), high word DX should be 0. 
+    ; If it's non-zero, the disk image is too big for this 16-bit routine.
+    cmp dx, 0
+    jnz disk_error_big_lba          ; Jump if LBA > 65535 sectors
     
-    mov ax, dx                      ; Remainder (Temp) into AX
-    xor dx, dx                      ; Zero DX for 16-bit division
-    mov di, 18                      ; 18 sectors/track
-    div di                          ; AX = Head, DX = Sector-1
+    ; Divide LBA by (SectorsPerTrack * Heads) = 36 to get Cylinder (C)
+    xor dx, dx                      ; DX:AX is now 32-bit LBA (max 0x0000FFFF)
+    mov cx, 36                      ; Divisor (Sectors/Cylinder)
+    div cx                          ; AX = C, DX = Remainder
+    
+    mov cl, al                      ; CL = Cylinder Low 8 bits
+    mov ch, ah                      ; CH = Cylinder High 2 bits (This is wrong, C is in AX)
+    
+    ; Re-do Cylinder calculation:
+    ; The result of the 16-bit DIV is: AX (Quotient=C), DX (Remainder)
+    mov bl, al                      ; BL = Cylinder (0-255)
+    
+    ; Divide Remainder by SectorsPerTrack (18) to get Head (H)
+    mov ax, dx                      ; Remainder into AX
+    xor dx, dx                      
+    mov cx, 18                      ; Divisor (Sectors/Track)
+    div cx                          ; AX = H, DX = Sector-1
+    
+    mov dh, al                      ; DH = Head (H)
+    inc dl                          ; DL = Sector (S) (1-based)
 
-    ; --- Use results: Head in AL, Sector-1 in DL ---
-    mov byte [head_temp], al        ; AL is Head
-    inc dx                          ; Increment 16-bit remainder (Sector-1)
-    mov cl, dl                      ; CL = Sector (1-based)
+    ; Combine 10-bit Cylinder (C) and Sector (S) into CL/CH pair (BIOS format)
+    mov ch, bl                      ; CH = Cylinder low 8 bits (C7...C0)
+    mov cl, dl                      ; CL = Sector (S) (1-based, S0...S5)
     
-    pop ax                          ; AX = Cylinder (10 bits, C9 C8 ... C0)
+    ; High 2 bits of Cylinder (C8, C9) go into bits 7, 6 of CL
+    mov al, bl                      ; AL = Cylinder value
+    and al, 0x0300                  ; Clear all but C8 and C9 (in AH)
+    shl al, 6                       ; Shift C8, C9 to CL bits 7, 6
+    or cl, al                       ; Combine with Sector
+    
+    ; Final CHS values are now in CX and DX (DH/DL)
+    
+    pop dx                          ; Restore original DX (drive ID), though we pushed it 
+                                    ; earlier, we need to restore it here. We saved it 
+                                    ; right before the div, so let's pop it now.
+
+    mov dh, byte [head_temp]        ; Retrieve Head (H) (We didn't actually use DH/DL for H/S)
+    
+    ; The correct CHS registers are: CL, CH, DH (already calculated above)
+    ; Drive DL is already correct.
+
+    ; --- Re-Calculate CHS for simplicity, relying purely on 16-bit ops ---
+    mov ax, word [current_lba]
+    mov dx, 0                       ; DX:AX = LBA
+    mov cx, 36
+    div cx                          ; AX = C, DX = Remainder
+    
     mov ch, al                      ; CH = Cylinder low 8 bits (C7...C0)
+    mov al, ah                      ; AH = Cylinder high 2 bits (000000 C9 C8)
     
-    mov dl, ah                      ; DL = Cylinder high 2 bits (000000 C9 C8)
-    and dl, 0x03                    ; Mask to get only C9, C8
-    shl dl, 6                       ; Shift to bits 7 and 6
-    or cl, dl                       ; Combine with Sector
+    mov al, dl                      ; AL = Remainder
+    mov dx, 0
+    mov cx, 18
+    div cx                          ; AX = H, DX = Sector-1
     
-    mov dh, byte [head_temp]        ; Retrieve Head
+    mov dh, al                      ; DH = Head
+    inc dl                          ; DL = Sector (1-based)
     
-    ; --- Determine sectors to read ---
+    ; Combine Cylinder High bits (in AL) with Sector (in DL) into CL
+    mov al, ch                      ; AL = C
+    and al, 0x03                    ; C8, C9
+    shl al, 6
+    or cl, dl                       ; Final CL (S|C8|C9)
+    mov ch, ch                      ; CH = C Low
+
+    ; Drive DL is restored from [BOOT_DRIVE_ADDRESS] in the loop below.
+
+    ; --- Determine sectors to read (same as before) ---
     mov al, cl
     and al, 0x3F                    ; al = sector (1-18)
     mov ah, 18
@@ -150,7 +200,7 @@ start:
     mov ah, 0x02                    ; Function: Read Sectors
     mov al, [sectors_this_read]     ; AL = sectors to read
     
-    ; DL (drive) needs to be reloaded (it was clobbered by CHS math)
+    ; DL (drive) needs to be reloaded 
     mov dl, [BOOT_DRIVE_ADDRESS]
     
     int 0x13
@@ -187,8 +237,10 @@ start:
     xor ah, ah                      ; AX = sectors we just read
     
     sub [sectors_to_read], ax       ; Decrease remaining count
-    add [current_lba], ax
-    adc word [current_lba+2], 0
+    
+    ; --- FIX: Update LBA as 32-bit value (using 32-bit add) ---
+    db 0x66                         ; 32-bit operand size prefix
+    add dword [current_lba], eax    ; Add AX (sectors read) to current_lba (32-bit)
     
     ; Calculate new paragraph offset for ES
     mov cx, 32
@@ -239,11 +291,14 @@ start:
     mov cr0, eax
 
     ; --- CRITICAL FIX: Far Return directly to KERNEL32_JUMP_ADDRESS (0x10000) ---
-    ; We are removing the intermediate function and jumping straight to kernel_start.
     
     push dword KERNEL32_JUMP_ADDRESS ; Pushes 0x10000 (EIP)
     push dword 0x08                  ; Pushes 0x08 (CS Selector)
     retf                             ; Atomically loads EIP=0x10000, CS=0x08, and starts execution at kernel32.asm
+
+disk_error_big_lba:
+    mov si, msg_big_lba
+    jmp print_string_and_halt
 
 disk_error:
     ; --- CHECKPOINT 'E' (ERROR) ---
@@ -251,6 +306,7 @@ disk_error:
     mov al, 'E'
     int 0x10
 
+print_string_and_halt:
     ; Simple error handling: just halt.
     cli
     hlt
@@ -287,12 +343,10 @@ gdt_descriptor:
 ; ==================================================================
 ; We are now in 32-bit Protected Mode!
 ; ==================================================================
-; This section is now EMPTY. Execution jumps directly to KERNEL32_JUMP_ADDRESS (0x10000).
 [BITS 32]
-; The label 'protected_mode_start' is no longer used for entry, but we keep the [BITS 32] block structure.
-; If the assembler requires a label to satisfy the original retf code, 
-; we can put a temporary one here, but since the retf is pushing 0x10000, 
-; we are safe to remove the jump target.
+; This section is now EMPTY. Execution jumps directly to KERNEL32_JUMP_ADDRESS (0x10000).
+
+msg_big_lba: db 'LBA too large for 16-bit read!', 0
 
 ; --- Padding ---
 ; Pad the rest of a 512-byte sector
