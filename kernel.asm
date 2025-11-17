@@ -1,24 +1,35 @@
 ; kernel.asm
 ;
-; Stage 2 bootloader.
+; Stage 2 bootloader (16-bit Real Mode)
 ; Loaded by stage 1 at 0x1000.
-; Responsible for switching to 32-bit protected mode and jumping to the kernel.
+; Job: Load kernel32.asm, set up GDT, and switch to 32-bit Protected Mode.
 ;
 
 [BITS 16]
 [ORG 0x1000] ; We are loaded at physical address 0x1000
 
-KERNEL32_LOAD_SEGMENT equ 0x1000  ; 16-bit segment (0x1000 * 16 = 0x10000)
-KERNEL32_JUMP_ADDRESS equ 0x10000 ; 32-bit physical address
-BOOT_DRIVE_ADDRESS equ 0x7DFD ; The physical address where boot.asm stored the drive ID
-TEMP_STACK_PTR equ 0x7000     ; Temporary stack pointer for BIOS calls
+KERNEL32_LOAD_SEGMENT   equ 0x1000  ; Segment to load kernel32.bin (0x1000 * 16 = 0x10000)
+KERNEL32_JUMP_ADDRESS   equ 0x10000 ; 32-bit physical address to jump to
+KERNEL32_SECTORS_TO_READ equ 256    ; Load 128 KB (256 sectors)
+KERNEL_START_LBA_32     equ 0x29    ; LBA 41 (40 sectors for Stage 2 + 1 sector for boot = LBA 41)
+BOOT_DRIVE_ADDRESS      equ 0x7DFD  ; Drive ID storage (from boot.asm)
+TEMP_STACK_PTR          equ 0x7000  ; Dedicated stack for BIOS calls
+
+; Disk Address Packet (DAP) Structure for AH=0x42
+dap_packet:
+dap_size:           db 0x10
+dap_reserved:       db 0x00
+dap_sectors:        dw 0x0000
+dap_buffer_offset:  dw 0x0000
+dap_buffer_segment: dw 0x0000
+dap_lba_low:        dd 0x00000000
+dap_lba_high:       dd 0x00000000
 
 ; --- Data for read loop ---
 sectors_to_read:    dw 0
 sectors_this_read:  db 0
-head_temp:          db 0
-current_lba:        dd 0          ; Still 32-bit for the count
-disk_error_code:    db 0          ; Stores AH from int 0x13 failure
+disk_error_code:    db 0
+current_lba:        dd 0          ; LBA counter
 
 print_char:                 ; Routine to print a character in AL
     mov ah, 0x0E
@@ -31,13 +42,13 @@ print_hex_digit:
     push bx
     push cx
     
-    ; Get last 4 bits of AL (which holds AH from error path)
+    mov al, ah              ; Get AH (error code) into AL
     and al, 0x0F
     cmp al, 0x09
     jbe .is_digit
-    add al, 0x07   ; A-F needs an offset of 7 from 9 (A is 10, 'A' is 65. 10 + 7 = 17, 17+48 = 65)
+    add al, 0x07   
 .is_digit:
-    add al, 0x30   ; Add '0' ASCII offset
+    add al, 0x30   
     call print_char
     
     pop cx
@@ -45,13 +56,11 @@ print_hex_digit:
     pop ax
     ret
     
-; --- String Printing Utility ---
-; Expects string address in SI (DS:SI)
 print_string:
     pusha
 .loop_str:
-    lodsb                   ; Load char from [SI] into AL and increment SI
-    cmp al, 0               ; Check for null terminator
+    lodsb                   
+    cmp al, 0               
     je .done_str
     call print_char
     jmp .loop_str
@@ -60,300 +69,209 @@ print_string:
     ret
     
 start:
-    cli                         ; Disable interrupts
+    cli
     
     ; --- Set up the stack and segment registers ---
-    xor ax, ax                  ; AX = 0
-    mov ds, ax                  ; DS = 0 (for accessing data by physical address)
-    mov es, ax                  ; ES = 0
-    mov ss, ax                  ; SS = 0
-    mov sp, 0x9000              ; Set main stack pointer (used for local calls like print_char)
+    xor ax, ax                  
+    mov ds, ax                  ; DS=0 for accessing high memory data (GDT, DAP table)
+    mov es, ax                  ; ES=0 initially
+    mov ss, ax                  ; SS=0
+    mov sp, 0x9000              ; Set main stack pointer 
+    
+    ; --- CHECKPOINT 1: Kernel Start (Should print immediately if boot.asm succeeded) ---
+    mov al, '1'
+    call print_char
     
     sti                         ; Re-enable interrupts
 
-    ; Load drive ID for later use in read loop
-    mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID saved by stage 1
+    ; Load drive ID 
+    mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID from 0x7DFD
     
-    ; --- 1. Reset the disk controller (for safety, but without retries) ---
-    mov ah, 0x00            ; Function 0x00: Reset Disk System
-    int 0x13
+    ; --- 2. Initialize LBA Read Parameters for KERNEL32 ---
+    mov word [sectors_to_read], KERNEL32_SECTORS_TO_READ
+    mov dword [current_lba], KERNEL_START_LBA_32 
     
-.read_kernel_stage:
-    ; --- CHECKPOINT 1 ---
-    mov al, '1'
-    call print_char
-
-; --- 2. Load the kernel from disk using CHS ---
-    
-    mov word [sectors_to_read], 256
-    mov dword [current_lba], 41
-    
-    mov ax, KERNEL32_LOAD_SEGMENT   ; ES = 0x1000
+    mov ax, KERNEL32_LOAD_SEGMENT ; ES = 0x1000 (Load to 0x10000)
     mov es, ax
-    mov bx, 0x0000                  ; BX = 0x0000 (Load to 0x1000:0000 = 0x10000)
-
-    ; --- CHECKPOINT 2 ---
+    mov bx, 0x0000                  ; Offset 0
+    
+    ; --- CHECKPOINT 2: Read Setup Complete ---
     mov al, '2'
     call print_char
 
 .read_loop:
-    ; LBA is currently in [current_lba]
-    
-    mov ax, word [current_lba]      ; AX = LBA (low 16 bits)
-    xor dx, dx                      ; DX:AX = LBA
-    
-    ; --- LBA to CHS Conversion ---
-    
-    ; Calculate Head (H) and Sector (S) based on LBA modulo 18
-    mov cx, 18                      ; Divisor (SectorsPerTrack)
-    div cx                          ; AX = C/H Temp, DX = LBA % 18 (Sector-1 Remainder)
-    
-    inc dl                          ; DL = Sector (1-based)
-    mov cl, dl                      ; CL = Sector (1-based, S0...S5). 
-    
-    mov dh, 0                       ; DH = Head (H) is always 0 for floppies in this setup.
-    
-    mov bp, cx                      ; **STORE C/S (CX) in non-volatile BP**
-    mov bx, dx                      ; **STORE H/S (DX) in non-volatile BX**
+    cmp word [sectors_to_read], 0
+    jz .a20_stage                   ; All sectors read, jump to A20
 
-    ; Calculate Cylinder (C) based on LBA divided by 36
-    mov ax, word [current_lba]
-    xor dx, dx
-    mov cx, 36
-    div cx                          ; AX = C, DX = Remainder (unused)
-
-    ; Combine 10-bit Cylinder (C) and Sector (S) into CL/CH pair (BIOS format)
-    mov ch, al                      ; CH = Cylinder low 8 bits (C7...C0)
-    
-    ; High 2 bits of Cylinder (C8, C9) go into bits 7, 6 of CL
-    mov al, ah                      ; AL = C High 2 bits (from AH)
-    and al, 0x03                    ; Mask to get only C8, C9
-    shl al, 6                       ; Shift C8, C9 to CL bits 7, 6
-    or cl, al                       ; Combine with Sector
-    
-    mov bp, cx                      ; **RE-STORE C/S (CX) in BP**
-    
-    ; --- Determine sectors to read (relying on CL) ---
-    mov al, cl
-    and al, 0x3F                    ; al = sector (1-18)
-    mov ah, 18
-    sub ah, al                      ; ah = 18 - sector
-    inc ah                          ; ah = sectors left on track
-    mov al, ah                      
-    xor ah, ah                      ; ax = sectors left on track
-    
-    mov di, [sectors_to_read]       ; DI = total sectors remaining
-    cmp ax, di                      
-    jbe .read_count_ok              
-    mov ax, di                      ; ax = min(sectors_on_track, sectors_remaining)
-.read_count_ok:
-    mov byte [sectors_this_read], al 
-    
-    ; --- CHECKPOINT 3 ---
+    ; --- CHECKPOINT 3: Reading Block ---
     mov al, '3'
     call print_char
 
+    ; Calculate sectors to read (read up to remaining sectors)
+    mov ax, [sectors_to_read]
+    mov byte [dap_sectors], al      
+    mov byte [sectors_this_read], al 
+
+    ; Set DAP parameters
+    mov word [dap_buffer_offset], bx 
+    mov word [dap_buffer_segment], es 
+    
+    mov ax, [current_lba]           ; LBA Low
+    mov [dap_lba_low], ax
+    mov ax, [current_lba + 2]       ; LBA High
+    mov [dap_lba_low + 2], ax
+    
     ; --- Attempt Read (with retries) ---
-    mov di, 3                       ; Retry count in DI
+    mov di, 3                       ; Retry count
 .retry_read:
-    push sp                         ; Save current SP (0x9000)
-    mov sp, TEMP_STACK_PTR          ; Switch to dedicated, isolated stack (0x7000)
+    push sp                         ; Save SP
+    mov sp, TEMP_STACK_PTR          ; Switch to dedicated stack
+    pusha                           
     
-    pusha                           ; Saves all general-purpose registers
-    
-    ; --- RESTORE CHS PARAMETERS from BP/BX to CX/DX for INT 0x13 ---
-    mov cx, bp                      ; Load calculated C/S from BP into CX
-    mov dx, bx                      ; Load calculated H/S from BX into DX
-    
-    mov ah, 0x02                    ; Function: Read Sectors
-    mov al, [sectors_this_read]     ; AL = sectors to read
-    
-    ; DL (drive) MUST be reloaded for every int 0x13 call
-    mov dl, [BOOT_DRIVE_ADDRESS]    ; Reload DL before INT 0x13
+    mov ah, 0x42                    ; Extended Read Sectors
+    mov dl, [BOOT_DRIVE_ADDRESS]    
+    mov si, dap_packet              ; DS:SI points to DAP (DS=0)
     
     int 0x13
     
-    ; Check AH for the status code after the interrupt
     mov byte [disk_error_code], ah
     
-    popa                            ; Restores all registers
+    popa                            
+    pop sp                          ; Restore SP
     
-    pop sp                          ; Restore main stack pointer (0x9000)
-    
-    ; Test status code
     jnc .read_success               ; Success!
     
     ; Read failed, reset disk and retry
     pusha
-    mov dl, [BOOT_DRIVE_ADDRESS]    ; Reload DL for disk reset
+    mov dl, [BOOT_DRIVE_ADDRESS]    
     mov ah, 0x00
     int 0x13
     popa
     
-    dec di                          ; Decrement retry counter in DI
+    dec di                          
     jnz .retry_read
     
     ; --- Read failed after all retries ---
-    mov al, 'F'
-    call print_char
-    
-    mov al, [disk_error_code]
-    call print_hex_digit
-    
     jmp disk_error                  
 
+
 .read_success:
-    ; --- CHECKPOINT 4 ---
+    ; --- CHECKPOINT 4: Successful Read ---
     mov al, '4'
     call print_char
     
-    ; --- Update counters and pointers ---
+    ; Update counters
     mov al, [sectors_this_read]
-    xor ah, ah                      ; AX = sectors we just read
+    xor ah, ah                      ; AX = sectors read
     
-    sub [sectors_to_read], ax       ; Decrease remaining count
-
-    add word [current_lba], ax      ; Add AX (sectors read) to current_lba (low 16)
-    adc word [current_lba+2], 0     ; Add carry to current_lba (high 16)
+    sub [sectors_to_read], ax       
+    
+    ; Update current_lba (32-bit addition)
+    mov dx, word [current_lba]      
+    add dx, ax                      
+    mov word [current_lba], dx      
+    
+    mov dx, word [current_lba+2]    
+    adc dx, 0                       
+    mov word [current_lba+2], dx    
     
     ; Calculate new paragraph offset for ES
-    mov cx, 32
-    mul cx                          ; AX = paragraph offset to add
+    mov cx, 32                      ; 512 bytes / 16 bytes per paragraph
+    mul cx                          ; AX = paragraph offset
     
-    push bx                         ; Save BX (which is 0)
     mov bx, es                      
     add bx, ax                      
     mov es, bx                      
-    pop bx                          ; Restore B (back to 0)
     
-    cmp word [sectors_to_read], 0
-    jz .a20_stage                   ; All sectors read, jump to A20
-
-    jmp .read_loop                  ; Read next chunk
+    jmp .read_loop                  
 
 .a20_stage:
-    ; --- CHECKPOINT 5 ---
+    ; --- CHECKPOINT 5: Pre-Protected Mode Setup ---
     mov al, '5'
     call print_char
 
     ; --- Enable A20 Gate ---
-    mov ax, 0x2402              ; Function 2402h: Enable A20 Gate
-    int 0x15                    ; Call BIOS
-    jc disk_error               ; Jump if error 
+    mov ax, 0x2402              
+    int 0x15                    
+    jc disk_error               
 
-    ; --- CHECKPOINT 6 ---
+    ; --- CHECKPOINT 6: A20 Enabled ---
     mov al, '6'
     call print_char
 
     ; --- Load GDT ---
     lgdt [gdt_descriptor]
 
+    ; --- Set up Data Segment Registers to be valid when switching modes ---
     mov ax, 0x10  ; The Data Segment Selector
-    mov ss, ax    ; Set the Stack Segment to a valid selector
+    mov ds, ax    
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax    ; CRITICAL: SS must point to a valid segment before CR0 bit 0 is set
 
-    ; --- CHECKPOINT 7 ---
+    ; --- CHECKPOINT 7: GDT Loaded, Segments Initialized ---
     mov al, '7'
     call print_char
-
-    ; --- CHECKPOINT 8 ---
-    mov al, '8'
-    call print_char
-
-    ; --- WAIT FOR KEYPRESS (16-bit) ---
-    mov si, wait_msg_16bit
-    call print_string
     
-    mov ah, 0x00                ; BIOS function 0x00: Wait for keypress
-    int 0x16                    ; Waits here until a key is pressed.
-
-    ; --- Setup 32-bit Stack Pointer (CRITICAL FIX) ---
-    ; Set 32-bit stack pointer (ESP) before enabling Protected Mode
-    mov esp, 0x90000            ; Set ESP to the high address used by kernel32.asm
-
-    ; Switch to protected mode
+    ; --- Switch to Protected Mode ---
     mov eax, cr0
     or eax, 0x1
     mov cr0, eax
 
     
+    ; --- JUMP TO 32-BIT KERNEL ---
+    ; This is the final 16-bit instruction, jumping to 0x08:0x10000
     push dword KERNEL32_JUMP_ADDRESS ; Pushes 0x10000 (EIP)
     push dword 0x08                  ; Pushes 0x08 (CS Selector)
-    retf                             ; Atomically loads EIP=0x10000, CS=0x08, and starts execution at kernel32.asm
-
-disk_error_big_lba:
-    mov si, msg_big_lba
-    jmp print_string_and_halt
+    retf                             ; Atomically loads EIP and CS, executing Stage 3
+    
+; --------------------------------------
+; Error Handling and Data
+; --------------------------------------
 
 disk_error:
-    ; --- CHECKPOINT 'E' (ERROR) ---
     mov ah, 0x0E
     mov al, 'E'
     int 0x10
     
-    mov si, msg_disk_error_generic ; Print generic error on failure
-    jmp print_string_and_halt
-
-print_string_and_halt:
-    ; Print routine for errors (expects string in SI)
-    push ax
-    push bx
-    push cx
-    push si ; Save original SI, as print_string uses it
+    mov al, [disk_error_code]
+    call print_hex_digit
     
-.loop_str_halt:
-    lodsb
-    cmp al, 0
-    je .halt_str
-    call print_char
-    jmp .loop_str_halt
-    
-.halt_str:
-    pop si ; Restore SI before continuing to popa
-    pop cx
-    pop bx
-    pop ax
+    mov si, msg_disk_error_generic 
+    call print_string
     cli
     hlt
     jmp $
 
+msg_disk_error_generic: db 'Disk I/O error during stage 2 load! Halting.', 0
+
 ; --- Global Descriptor Table (GDT) ---
 gdt_start:
-    ; Null descriptor (required)
+    ; Null descriptor 0x00
     dq 0x0
 
     ; Code segment descriptor (selector 0x08)
-    dw 0xFFFF                   ; Limit (low 16 bits)
-    dw 0x0000                   ; Base (low 16 bits)
-    db 0x00                     ; Base (mid 8 bits)
-    db 0b10011010               ; Access (Present, Ring 0, Code, Executable, Readable)
-    db 0b11001111               ; Flags (Granularity=4K, 32-bit) + Limit (high 4 bits)
-    db 0x00                     ; Base (high 8 bits)
+    dw 0xFFFF                   ; Limit (low)
+    dw 0x0000                   ; Base (low)
+    db 0x00                     ; Base (mid)
+    db 0b10011010               ; Access (Code, Present, Ring 0, Readable)
+    db 0b11001111               ; Flags (Granularity=4K, 32-bit) + Limit (high)
+    db 0x00                     ; Base (high)
 
     ; Data segment descriptor (selector 0x10)
-    dw 0xFFFF                   ; Limit (low 16 bits)
-    dw 0x0000                   ; Base (low 16 bits)
-    db 0x00                     ; Base (mid 8 bits)
-    db 0b10010010               ; Access (Present, Ring 0, Data, Writable)
-    db 0b11001111               ; Flags (Granularity=4K, 32-bit) + Limit (high 4 bits)
-    db 0x00                     ; Base (high 8 bits)
+    dw 0xFFFF                   
+    dw 0x0000                   
+    db 0x00                     
+    db 0b10010010               ; Access (Data, Present, Ring 0, Writable)
+    db 0b11001111               
+    db 0x00                     
 
 gdt_end:
 
-; GDT descriptor (pointer) for the LGDT instruction
 gdt_descriptor:
-    dw gdt_end - gdt_start - 1  ; Limit (size of GDT - 1)
-    dd gdt_start                ; Base address of GDT (physical address due to ORG and DS=0)
-
-; ==================================================================
-; We are now in 32-bit Protected Mode!
-; ==================================================================
-[BITS 32]
-; This section is now EMPTY. Execution jumps directly to KERNEL32_JUMP_ADDRESS (0x10000).
-
-msg_big_lba: db 'LBA too large for 16-bit read!', 0
-msg_disk_error_generic: db 'Disk I/O error during stage 2 load!', 0
-wait_msg_16bit: db 'Boot stage 2 complete (16-bit mode). Press any key to continue to 32-bit kernel...', 0
+    dw gdt_end - gdt_start - 1  ; Limit
+    dd gdt_start                ; Base address (Physical 0x1000 + offset to gdt_start)
 
 ; --- Padding ---
-; Pad the rest of a 512-byte sector
 times 20480 - ($ - $$) db 0
