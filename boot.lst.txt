@@ -52,32 +52,26 @@
     52 00000219 BE[0000]                    mov si, dap_packet
     53                                      
     54 0000021C B442                        mov ah, 0x42            ; Extended Read Sectors
-    55                                      
-    56                                      ; --- The Fix: Temporarily use the Hard Disk ID for the AH=0x42 call ---
-    57                                      ; --- We trust that the floppy BIOS should handle the ID conversion internally. ---
-    58 0000021E B280                        mov dl, 0x80
-    59                                      
-    60 00000220 CD13                        int 0x13
-    61                                      
-    62                                      ; Check drive ID again (in case BIOS reset it)
-    63 00000222 8A16[FD01]                  mov dl, [boot_drive_storage] 
-    64                                      
-    65 00000226 7304                        jnc .jump_to_stage2     ; If carry flag is clear, success!
-    66                                      
-    67                                      ; Read failed: Halt indefinitely
-    68 00000228 FA                          cli
-    69 00000229 F4                          hlt
-    70 0000022A EBFE                        jmp $
-    71                                      
-    72                                  .jump_to_stage2:
-    73                                      
-    74                                      ; 3. Final Segment Setup (CRITICAL FIXES)
-    75                                      ; DS and ES must match the new code segment (0x0100) before the jump.
-    76 0000022C B80001                      mov ax, KERNEL_LOAD_SEGMENT
-    77 0000022F 8ED8                        mov ds, ax              ; Set DS to 0x0100
-    78 00000231 8EC0                        mov es, ax              ; Set ES to 0x0100
-    79                                  
-    80                                      ; 4. Jump to the loaded kernel (Stage 2)
-    81 00000233 680001                      push KERNEL_LOAD_SEGMENT ; Pushes 0x0100 (CS) onto the stack
-    82 00000236 6A00                        push KERNEL_LOAD_OFFSET  ; Pushes 0x0000 (IP) onto the stack
-    83 00000238 CB                          retf                     ; Far Return/Jump to 0x0100:0x0000
+    55 0000021E 8A16[FD01]                  mov dl, [boot_drive_storage]
+    56 00000222 CD13                        int 0x13
+    57                                       
+    58                                      
+    59 00000224 7304                        jnc .jump_to_stage2     ; If carry flag is clear, success!
+    60                                      
+    61                                      ; Read failed: Halt indefinitely
+    62 00000226 FA                          cli
+    63 00000227 F4                          hlt
+    64 00000228 EBFE                        jmp $
+    65                                      
+    66                                  .jump_to_stage2:
+    67                                      
+    68                                      ; 3. Final Segment Setup (CRITICAL FIXES)
+    69                                      ; DS and ES must match the new code segment (0x0100) before the jump.
+    70 0000022A B80001                      mov ax, KERNEL_LOAD_SEGMENT
+    71 0000022D 8ED8                        mov ds, ax              ; Set DS to 0x0100
+    72 0000022F 8EC0                        mov es, ax              ; Set ES to 0x0100
+    73                                  
+    74                                      ; 4. Jump to the loaded kernel (Stage 2)
+    75 00000231 680001                      push KERNEL_LOAD_SEGMENT ; Pushes 0x0100 (CS) onto the stack
+    76 00000234 6A00                        push KERNEL_LOAD_OFFSET  ; Pushes 0x0000 (IP) onto the stack
+    77 00000236 CB                          retf                     ; Far Return/Jump to 0x0100:0x0000

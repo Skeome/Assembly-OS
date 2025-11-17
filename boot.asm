@@ -52,15 +52,9 @@ start:
     mov si, dap_packet
     
     mov ah, 0x42            ; Extended Read Sectors
-    
-    ; --- The Fix: Temporarily use the Hard Disk ID for the AH=0x42 call ---
-    ; --- We trust that the floppy BIOS should handle the ID conversion internally. ---
-    mov dl, 0x80
-    
+    mov dl, [boot_drive_storage]
     int 0x13
-    
-    ; Check drive ID again (in case BIOS reset it)
-    mov dl, [boot_drive_storage] 
+     
     
     jnc .jump_to_stage2     ; If carry flag is clear, success!
     

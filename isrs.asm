@@ -1,25 +1,40 @@
 ; isrs.asm - Interrupt Service Routines (ISRs) and Interrupt ReQuests (IRQs)
+; 
+; NOTE: All ISRs and IRQs must run in 32-bit Protected Mode (P-Mode)
+; The CPU is expected to switch from the code segment (0x08) to the
+; kernel's stack segment (0x10) if the privilege level changes.
 
-; Common stub for all exceptions
+; Common stub for all exceptions and interrupts
+; When an interrupt or exception occurs, the CPU pushes:
+; [EIP, CS, EFLAGS] or [Error Code, EIP, CS, EFLAGS]
 isr_common_stub:
-    pusha       ; Push eax, ecx, edx, ebx, esp, ebp, esi, edi
+    ; Stack layout upon entry to isr_common_stub:
+    ; [esp + 20]: EFLAGS
+    ; [esp + 16]: CS
+    ; [esp + 12]: EIP
+    ; [esp + 8]: Error Code (pushed by CPU or manually by macro)
+    ; [esp + 4]: Interrupt Number (pushed by macro)
+    
+    pusha       ; Push eax, ecx, edx, ebx, esp (old), ebp, esi, edi (32 bytes)
+    
+    ; Stack layout now has the 32-bit interrupt frame + pusha
     
     ; Display a simple "Fault" message
     mov esi, fault_msg
-    mov edi, 0xB8000 + (2 * 80) ; Print on line 2
+    mov edi, 0xB8000 + (2 * 80 * 2) ; Print on line 2 (4th row from the top)
 .fault_loop:
     lodsb
     cmp al, 0
     je .fault_done
     
     mov ah, 0x0C      ; Attribute: Red on Black
-    mov [edi], ax
-    add edi, 2
+    stosw             ; Write AX (char + attr) to [EDI] (EDI auto-incremented by 2)
     jmp .fault_loop
 .fault_done:
     
+    ; For now, just halt the system
     cli
-    hlt         ; For now, just halt the system
+    hlt
 
 fault_msg: db 'KERNEL PANIC: CPU EXCEPTION. SYSTEM HALTED.', 0
 
@@ -28,75 +43,66 @@ fault_msg: db 'KERNEL PANIC: CPU EXCEPTION. SYSTEM HALTED.', 0
 %macro ISR_NOERR 1
 [GLOBAL isr%1]
 isr%1:
-    cli
-    push dword 0    ; Push 32-bit dummy error code (4 bytes)
-    push dword %1   ; Push 32-bit interrupt number (4 bytes)
+    cli                 ; Disable interrupts
+    push dword 0        ; Dummy error code (exceptions without error code)
+    push dword %1       ; Interrupt number
     jmp isr_common_stub
 %endmacro
 
 %macro ISR_ERRCODE 1
 [GLOBAL isr%1]
 isr%1:
-    cli
-    ; Error code is already on the stack (Pushed as 32-bit by CPU)
-    push dword %1   ; Push 32-bit interrupt number (4 bytes)
+    cli                 ; Disable interrupts
+    ; Error code is already on the stack (Pushed by CPU)
+    push dword %1       ; Interrupt number
     jmp isr_common_stub
 %endmacro
 
-ISR_NOERR 0
-ISR_NOERR 1
-ISR_NOERR 2
-ISR_NOERR 3
-ISR_NOERR 4
-ISR_NOERR 5
-ISR_NOERR 6
-ISR_NOERR 7
-ISR_ERRCODE 8
-ISR_NOERR 9
-ISR_ERRCODE 10
-ISR_ERRCODE 11
-ISR_ERRCODE 12
-ISR_ERRCODE 13
-ISR_ERRCODE 14
-ISR_NOERR 15
-ISR_NOERR 16
-ISR_ERRCODE 17
-ISR_NOERR 18
-ISR_NOERR 19
-ISR_NOERR 20
-ISR_NOERR 21
-ISR_NOERR 22
-ISR_NOERR 23
-ISR_NOERR 24
-ISR_NOERR 25
-ISR_NOERR 26
-ISR_NOERR 27
-ISR_NOERR 28
-ISR_NOERR 29
-ISR_NOERR 30
-ISR_NOERR 31
+ISR_NOERR 0             ; Divide-by-zero Error
+ISR_NOERR 1             ; Debug Exception
+ISR_NOERR 2             ; Non-Maskable Interrupt
+ISR_NOERR 3             ; Breakpoint
+ISR_NOERR 4             ; Overflow
+ISR_NOERR 5             ; Bound Range Exceeded
+ISR_NOERR 6             ; Invalid Opcode
+ISR_NOERR 7             ; Device Not Available (No Math Coprocessor)
+ISR_ERRCODE 8           ; Double Fault (Needs error code)
+ISR_NOERR 9             ; CoProcessor Segment Overrun (Reserved)
+ISR_ERRCODE 10          ; Invalid TSS (Needs error code)
+ISR_ERRCODE 11          ; Segment Not Present (Needs error code)
+ISR_ERRCODE 12          ; Stack-Segment Fault (Needs error code)
+ISR_ERRCODE 13          ; General Protection Fault (GPF)
+ISR_ERRCODE 14          ; Page Fault (Needs error code)
+ISR_NOERR 15            ; Reserved
+ISR_NOERR 16            ; x87 Floating-Point Exception
+ISR_ERRCODE 17          ; Alignment Check (Needs error code)
+ISR_NOERR 18            ; Machine Check
+ISR_NOERR 19            ; SIMD Floating-Point Exception
+ISR_NOERR 20            ; Virtualization Exception
+ISR_NOERR 21            ; Control Protection Exception
+ISR_NOERR 22            ; Reserved
+ISR_NOERR 23            ; Reserved
+ISR_NOERR 24            ; Reserved
+ISR_NOERR 25            ; Reserved
+ISR_NOERR 26            ; Reserved
+ISR_NOERR 27            ; Reserved
+ISR_NOERR 28            ; Hypervisor Injection Exception
+ISR_NOERR 29            ; VMM Communication Exception
+ISR_ERRCODE 30          ; Security Exception (Needs error code)
+ISR_NOERR 31            ; Reserved
 
 ; --- Hardware Interrupt Handlers (IRQs 0-15 mapped to ISRs 32-47) ---
 
 %macro IRQ_STUB 2
 [GLOBAL irq%1]
 irq%1:
-    pusha                 ; Save all general-purpose registers
-
-    ; Send End-of-Interrupt (EOI) signal to the PICs.
-    %if %2 == 2
-        mov al, 0x20
-        out 0xA0, al      ; Send EOI to Slave PIC (port 0xA0)
-    %endif
-
-    mov al, 0x20
-    out 0x20, al          ; Send EOI to Master PIC (port 0x20)
-
-    popa                  ; Restore all registers
-    iret                  ; Return from interrupt
+    push dword 0x00     ; Push a dummy error code (for alignment)
+    push dword (32 + %1) ; Push the final interrupt vector number (32-47)
+    
+    ; Jump to the common handler, which will save registers and handle EOI
+    jmp irq_common_stub
 %endmacro
 
-; We must define all 16 IRQs, even if we don't use them
 IRQ_STUB 0, 1  ; IRQ 0:  Timer (ISR 32)
 IRQ_STUB 1, 1  ; IRQ 1:  Keyboard (ISR 33)
 IRQ_STUB 2, 1  ; IRQ 2:  Cascade (ISR 34)
@@ -114,14 +120,46 @@ IRQ_STUB 13, 2 ; IRQ 13: FPU/Coprocessor (ISR 45)
 IRQ_STUB 14, 2 ; IRQ 14: Primary ATA (ISR 46)
 IRQ_STUB 15, 2 ; IRQ 15: Secondary ATA (ISR 47)
 
+; Common IRQ handler logic (32-bit)
+irq_common_stub:
+    pusha       ; Save registers
 
-; Function to install all the ISRs and IRQs into the IDT
+    ; At this point, you would call a C/High-level IRQ handler
+    ; ...
+
+    ; Send End-of-Interrupt (EOI) signal to the PICs.
+    ; Check if IRQ came from Slave PIC (IRQs 8-15)
+    mov al, byte [esp + 36] ; Get interrupt number (pushed before pusha)
+    cmp al, 40              ; Is it IRQ 8 (40) or higher?
+    jl .no_slave_eoi        ; If < 40, skip slave EOI
+
+    ; Send EOI to Slave PIC (port 0xA0)
+    mov al, 0x20
+    out 0xA0, al      
+
+.no_slave_eoi:
+    ; Send EOI to Master PIC (port 0x20)
+    mov al, 0x20
+    out 0x20, al          
+
+    popa                  ; Restore registers
+    
+    ; Clean up the stack frame pushed by the stub (Interrupt number + dummy error code)
+    add esp, 8
+    
+    iret                  ; Return from interrupt (Pops EIP, CS, EFLAGS)
+
+
+; Function to install all the ISRs and IRQs into the IDT (Called from kernel32.asm)
+[GLOBAL isrs_install]
 isrs_install:
     ; Install CPU Exception ISRs (0-31)
-    mov ebx, isr0     ; Get address of handler
-    mov eax, 0        ; Interrupt number
     mov ecx, 0x08     ; Code segment selector
-    mov edx, 0x8E     ; Flags: 32-bit interrupt gate, present
+    mov edx, 0x8E     ; Flags: 32-bit interrupt gate, present, DPL=0
+
+    ; --- Install 32 CPU Exceptions (ISRs 0-31) ---
+    mov ebx, isr0
+    mov eax, 0
     call idt_set_gate
     
     mov ebx, isr1
@@ -248,7 +286,8 @@ isrs_install:
     mov eax, 31
     call idt_set_gate
     
-    ; Install IRQ Handlers (32-47)
+    ; --- Install 16 IRQ Handlers (ISRs 32-47) ---
+    ; IRQs 0-7: Master PIC (32-39)
     mov ebx, irq0
     mov eax, 32
     call idt_set_gate
@@ -281,6 +320,7 @@ isrs_install:
     mov eax, 39
     call idt_set_gate
     
+    ; IRQs 8-15: Slave PIC (40-47)
     mov ebx, irq8
     mov eax, 40
     call idt_set_gate

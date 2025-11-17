@@ -1,66 +1,72 @@
 ; ------------------------------------------------------------------
 ; Yggdrasil OS - Interrupt Descriptor Table (IDT)
 ; ------------------------------------------------------------------
+; The IDT is loaded at 0x10000 + offset (within kernel32.asm)
+; Since kernel32.asm is padded to 128KB, the IDT is within this region.
 
-; Structure for an IDT entry (gate) - for reference
-; An IDT entry is 8 bytes long.
-; 0-1: Base (low)
-; 2-3: Selector
-; 4:   Reserved (always 0)
-; 5:   Flags
-; 6-7: Base (high)
+IDT_SIZE equ 256 ; Maximum number of entries
 
-IDT_SIZE equ 256
-
-; Reserve space for the IDT at the beginning of the 32-bit kernel's data space
+; Reserve space for the IDT
+; An IDT entry is 8 bytes long: 256 * 8 = 2048 bytes
 idt:
-    times IDT_SIZE * 8 db 0  ; Reserve 256 * 8 = 2048 bytes, initialized to zero
+    times IDT_SIZE * 8 db 0  ; Reserve space, initialized to zero
 
 ; The IDT descriptor (pointer) used by the 'lidt' instruction
 idt_descriptor:
     dw (IDT_SIZE * 8) - 1  ; Limit (size of IDT in bytes - 1)
-    dd idt                 ; Base (linear address of idt)
+    dd idt                 ; Base (linear address of idt - updated at runtime)
 
 
-; Function to set up a single IDT gate
+; Function: idt_set_gate
+; Description: Sets a single IDT gate entry (32-bit interrupt gate).
 ; ARGS:
 ;   eax: interrupt number (0-255)
-;   ebx: address of the interrupt handler
-;   ecx: code segment selector (e.g., 0x08)
-;   edx: flags (e.g., 0x8E for 32-bit interrupt gate)
+;   ebx: 32-bit address of the interrupt handler
+;   ecx: 16-bit code segment selector (e.g., 0x08)
+;   edx: 16-bit flags (e.g., 0x8E00 for 32-bit interrupt gate)
+[GLOBAL idt_set_gate]
 idt_set_gate:
     push edi
     push eax
-    push ebp ; Use EBP as a temporary register to protect EBX
+    push ebp 
+    push ecx
+    push edx
 
     ; edi = idt + (interrupt_number * 8)
     shl eax, 3  ; eax = interrupt_number * 8
     lea edi, [idt + eax]
     
-    ; Set base address (low 2 bytes)
-    mov [edi], bx
+    ; 1. Set Offset (low 16 bits)
+    mov [edi], bx               ; Write low 16 bits of handler address
     
-    ; Set base address (high 2 bytes) - Use EBP temporarily
-    mov ebp, ebx        ; EBP = full 32-bit address
-    shr ebp, 16         ; EBP = high 16 bits
-    mov [edi + 6], bp   ; Write only the low word (high 16 bits of EBP)
+    ; 2. Set Selector (2 bytes)
+    mov [edi + 2], cx           ; Write segment selector (e.g. 0x08)
+    
+    ; 3. Set Reserved byte and Flags/Type (2 bytes)
+    ; Flags are in EDX, but we only use the low 16 bits (0x8E00 or 0x8E)
+    mov [edi + 4], dl           ; Write low byte of flags (P, DPL, S, Type)
+    
+    ; 4. Set Offset (high 16 bits)
+    mov ebp, ebx                ; EBP = full 32-bit address
+    shr ebp, 16                 ; EBP = high 16 bits
+    mov [edi + 6], bp           ; Write high 16 bits of handler address
 
-    ; Set selector (2 bytes)
-    mov [edi + 2], cx
-    
-    ; Set reserved byte (1 byte)
-    mov byte [edi + 4], 0
-    
-    ; Set flags (1 byte)
-    mov [edi + 5], dl
-
+    pop edx
+    pop ecx
     pop ebp
     pop eax
     pop edi
     ret
 
 ; Function to load the IDT
+[GLOBAL idt_install]
 idt_install:
+    ; CRITICAL FIX: The IDT base address is relative to ORG 0x10000.
+    ; We must add the load address (0x10000) to the IDT's base address pointer.
+    mov ebx, idt          ; Get IDT label offset
+    add ebx, 0x10000      ; Add the load address 0x10000 (Physical address of kernel32.asm)
+    mov dword [idt_descriptor + 2], ebx ; Update the 32-bit base address field of the descriptor
+    
     ; Load the IDT descriptor into the IDTR register
     lidt [idt_descriptor]
     ret
