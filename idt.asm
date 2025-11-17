@@ -10,11 +10,9 @@
 ; 5:   Flags
 ; 6-7: Base (high)
 
-; We need 256 entries for all possible interrupts (0-255)
 IDT_SIZE equ 256
 
-; Reserve space for the IDT
-; We will fill this table using the idt_set_gate function
+; Reserve space for the IDT at the beginning of the 32-bit kernel's data space
 idt:
     times IDT_SIZE * 8 db 0  ; Reserve 256 * 8 = 2048 bytes, initialized to zero
 
@@ -33,7 +31,7 @@ idt_descriptor:
 idt_set_gate:
     push edi
     push eax
-    push ebx
+    push ebp ; Use EBP as a temporary register
 
     ; edi = idt + (interrupt_number * 8)
     shl eax, 3  ; eax = interrupt_number * 8
@@ -41,10 +39,12 @@ idt_set_gate:
     
     ; Set base address (low 2 bytes)
     mov [edi], bx
-    ; Set base address (high 2 bytes)
-    shr ebx, 16
-    mov [edi + 6], bx
     
+    ; Set base address (high 2 bytes) - Use EBP temporarily
+    mov ebp, ebx        ; EBP = full 32-bit address
+    shr ebp, 16         ; EBP = high 16 bits
+    mov [edi + 6], bp   ; Write only the low word (high 16 bits of EBP)
+
     ; Set selector (2 bytes)
     mov [edi + 2], cx
     
@@ -54,7 +54,7 @@ idt_set_gate:
     ; Set flags (1 byte)
     mov [edi + 5], dl
 
-    pop ebx
+    pop ebp
     pop eax
     pop edi
     ret

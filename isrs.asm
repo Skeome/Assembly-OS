@@ -29,8 +29,8 @@ fault_msg: db 'KERNEL PANIC: CPU EXCEPTION. SYSTEM HALTED.', 0
 [GLOBAL isr%1]
 isr%1:
     cli
-    push dword 0    ; <-- FIX: Push 32-bit dummy error code (4 bytes)
-    push dword %1   ; <-- FIX: Push 32-bit interrupt number (4 bytes)
+    push dword 0    ; FIX: Push 32-bit dummy error code (4 bytes)
+    push dword %1   ; FIX: Push 32-bit interrupt number (4 bytes)
     jmp isr_common_stub
 %endmacro
 
@@ -39,7 +39,7 @@ isr%1:
 isr%1:
     cli
     ; Error code is already on the stack (Pushed as 32-bit by CPU)
-    push dword %1   ; <-- FIX: Push 32-bit interrupt number (4 bytes)
+    push dword %1   ; FIX: Push 32-bit interrupt number (4 bytes)
     jmp isr_common_stub
 %endmacro
 
@@ -84,8 +84,6 @@ irq%1:
     pusha                 ; Save all general-purpose registers
 
     ; Send End-of-Interrupt (EOI) signal to the PICs.
-    ; If the IRQ came from the slave (IRQ 8-15), we must send
-    ; an EOI to both the slave and the master.
     %if %2 == 2
         mov al, 0x20
         out 0xA0, al      ; Send EOI to Slave PIC (port 0xA0)
@@ -225,7 +223,6 @@ isrs_install:
     mov eax, 25
     call idt_set_gate
 
-NEW_CODE:
     mov ebx, isr26
     mov eax, 26
     call idt_set_gate
