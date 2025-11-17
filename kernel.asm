@@ -95,89 +95,40 @@ start:
     call print_char
 
 .read_loop:
-    ; --- Convert LBA (32-bit) to CHS (16-bit safe) ---
-    ; LBA is < 1440 sectors, so AX (16 bits) can hold the LBA value, avoiding EAX/EDX complexity.
+    ; --- CRITICAL FIX: Robust LBA to CHS (16-bit safe) ---
+    ; LBA is currently in [current_lba]
     
-    push dx                         ; Save DX since we will use it for calculations
+    mov ax, word [current_lba]      ; AX = LBA (low 16 bits)
+    xor dx, dx                      ; DX:AX = LBA
     
-    ; Load the 32-bit LBA into AX (low 16) and DX (high 16)
-    mov dx, word [current_lba+2]
+    ; Calculate Head (H): LBA % (SectorsPerTrack * Heads) / SectorsPerTrack
+    mov cx, 18                      ; Divisor (SectorsPerTrack)
+    div cx                          ; AX = C/H Temp, DX = LBA % 18 (Sector-1 Remainder)
+    
+    inc dl                          ; DL = Sector (1-based)
+    mov cl, dl                      ; CL = Sector (1-based, S0...S5)
+    
+    mov al, dh                      ; AL = C/H Temp (Original quotient)
+    mov dh, 0                       ; DH = Head (H) (Final H is 0 or 1 for floppies)
+
+    ; Calculate Cylinder (C): LBA / SectorsPerCylinder (36)
     mov ax, word [current_lba]
-    
-    ; Since LBA is small (max 1440), high word DX should be 0. 
-    ; If it's non-zero, the disk image is too big for this 16-bit routine.
-    cmp dx, 0
-    jnz disk_error_big_lba          ; Jump if LBA > 65535 sectors
-    
-    ; Divide LBA by (SectorsPerTrack * Heads) = 36 to get Cylinder (C)
-    xor dx, dx                      ; DX:AX is now 32-bit LBA (max 0x0000FFFF)
-    mov cx, 36                      ; Divisor (Sectors/Cylinder)
-    div cx                          ; AX = C, DX = Remainder
-    
-    mov cl, al                      ; CL = Cylinder Low 8 bits
-    mov ch, ah                      ; CH = Cylinder High 2 bits (This is wrong, C is in AX)
-    
-    ; Re-do Cylinder calculation:
-    ; The result of the 16-bit DIV is: AX (Quotient=C), DX (Remainder)
-    mov bl, al                      ; BL = Cylinder (0-255)
-    
-    ; Divide Remainder by SectorsPerTrack (18) to get Head (H)
-    mov ax, dx                      ; Remainder into AX
-    xor dx, dx                      
-    mov cx, 18                      ; Divisor (Sectors/Track)
-    div cx                          ; AX = H, DX = Sector-1
-    
-    mov dh, al                      ; DH = Head (H)
-    inc dl                          ; DL = Sector (S) (1-based)
+    xor dx, dx
+    mov cx, 36
+    div cx                          ; AX = C, DX = Remainder (unused)
 
     ; Combine 10-bit Cylinder (C) and Sector (S) into CL/CH pair (BIOS format)
-    mov ch, bl                      ; CH = Cylinder low 8 bits (C7...C0)
-    mov cl, dl                      ; CL = Sector (S) (1-based, S0...S5)
+    mov ch, al                      ; CH = Cylinder low 8 bits (C7...C0)
     
     ; High 2 bits of Cylinder (C8, C9) go into bits 7, 6 of CL
-    mov al, bl                      ; AL = Cylinder value
-    and al, 0x0300                  ; Clear all but C8 and C9 (in AH)
+    mov al, ah                      ; AL = C High 2 bits (from AH)
+    and al, 0x03                    ; Mask to get only C8, C9
     shl al, 6                       ; Shift C8, C9 to CL bits 7, 6
     or cl, al                       ; Combine with Sector
     
-    ; Final CHS values are now in CX and DX (DH/DL)
+    ; DH (Head) is already 0. DL (Drive) will be loaded below.
     
-    pop dx                          ; Restore original DX (drive ID), though we pushed it 
-                                    ; earlier, we need to restore it here. We saved it 
-                                    ; right before the div, so let's pop it now.
-
-    mov dh, byte [head_temp]        ; Retrieve Head (H) (We didn't actually use DH/DL for H/S)
-    
-    ; The correct CHS registers are: CL, CH, DH (already calculated above)
-    ; Drive DL is already correct.
-
-    ; --- Re-Calculate CHS for simplicity, relying purely on 16-bit ops ---
-    mov ax, word [current_lba]
-    mov dx, 0                       ; DX:AX = LBA
-    mov cx, 36
-    div cx                          ; AX = C, DX = Remainder
-    
-    mov ch, al                      ; CH = Cylinder low 8 bits (C7...C0)
-    mov al, ah                      ; AH = Cylinder high 2 bits (000000 C9 C8)
-    
-    mov al, dl                      ; AL = Remainder
-    mov dx, 0
-    mov cx, 18
-    div cx                          ; AX = H, DX = Sector-1
-    
-    mov dh, al                      ; DH = Head
-    inc dl                          ; DL = Sector (1-based)
-    
-    ; Combine Cylinder High bits (in AL) with Sector (in DL) into CL
-    mov al, ch                      ; AL = C
-    and al, 0x03                    ; C8, C9
-    shl al, 6
-    or cl, dl                       ; Final CL (S|C8|C9)
-    mov ch, ch                      ; CH = C Low
-
-    ; Drive DL is restored from [BOOT_DRIVE_ADDRESS] in the loop below.
-
-    ; --- Determine sectors to read (same as before) ---
+    ; --- Determine sectors to read (relying on CL) ---
     mov al, cl
     and al, 0x3F                    ; al = sector (1-18)
     mov ah, 18
@@ -238,9 +189,9 @@ start:
     
     sub [sectors_to_read], ax       ; Decrease remaining count
     
-    ; --- FIX: Update LBA as 32-bit value (using 32-bit add) ---
-    db 0x66                         ; 32-bit operand size prefix
-    add dword [current_lba], eax    ; Add AX (sectors read) to current_lba (32-bit)
+    ; --- FIX: Update LBA without 32-bit prefix on ADD, use ADC ---
+    add word [current_lba], ax      ; Add AX (sectors read) to current_lba (low 16)
+    adc word [current_lba+2], 0     ; Add carry to current_lba (high 16)
     
     ; Calculate new paragraph offset for ES
     mov cx, 32
