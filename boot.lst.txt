@@ -1,150 +1,108 @@
-     1                                  ; boot.asm - Stage 1 (Minimal LBA Read)
-     2                                  ; Job: Load kernel.bin (Stage 2) into memory at 0x1000 using LBA.
+     1                                  ; boot.asm - Stage 1 (Minimal CHS Read)
+     2                                  ; Job: Load kernel.bin (Stage 2) into memory at 0x1000 and execute it.
      3                                  ;-----------------------------------------------------------------------------
      4                                  
      5                                  [ORG 0x7C00]
      6                                  [BITS 16]
      7                                  
-     8                                  BOOT_SEGMENT_BASE       equ 0x07C0    ; 0x7C0 * 10h = 0x7C00 physical address
-     9                                  
-    10                                  KERNEL_START_LBA        equ 0x01      ; LBA 1
-    11                                  KERNEL_SECTORS_TO_READ  equ 40        
-    12                                  KERNEL_LOAD_SEGMENT     equ 0x0100    ; ES = 0x0100 (Physical address 0x1000)
-    13                                  KERNEL_LOAD_OFFSET      equ 0x0000    
-    14                                  
-    15                                  ; Disk Address Packet (DAP) definition placed early to stabilize offsets
-    16                                  dap_packet:
-    17 00000000 10                      dap_size:           db 0x10         ; 0x00: Packet size
-    18 00000001 00                      dap_reserved:       db 0x00         ; 0x01
-    19 00000002 2800                    dap_sectors:        dw KERNEL_SECTORS_TO_READ ; 0x02: Sectors to read (40)
-    20 00000004 0000                    dap_buffer_offset:  dw KERNEL_LOAD_OFFSET     ; 0x04: Load offset (0x0000)
-    21 00000006 0001                    dap_buffer_segment: dw KERNEL_LOAD_SEGMENT    ; 0x06: Load segment (0x0100)
-    22 00000008 01000000                dap_lba_low:        dd KERNEL_START_LBA       ; 0x08: LBA Start (1)
-    23 0000000C 00000000                dap_lba_high:       dd 0x00000000             ; 0x0C
-    24                                  
-    25                                  ; Padding and Drive ID Storage (at 0x7DFD in memory)
-    26 00000010 00<rep 1EDh>            times 510 - ($ - $$) - 1 db 0 
-    27 000001FD 00                      boot_drive_storage: db 0        ; Store drive ID here (at 0x7DFD)
-    28 000001FE 55AA                    dw 0xAA55                       ; Boot signature
-    29                                  
-    30                                  
-    31                                  start:
-    32 00000200 FA                          cli                     ; Disable interrupts for setup
-    33                                      
-    34                                      ; 1. Setup Segments and Stack
-    35                                      ; CRITICAL FIX: Set DS to 0x7C0 so DS:SI=0x7C0:0x0000 correctly
-    36                                      ; addresses the DAP at physical 0x7C00.
-    37 00000201 B8C007                      mov ax, BOOT_SEGMENT_BASE ; AX = 0x07C0
-    38 00000204 8ED8                        mov ds, ax              ; DS=0x7C0 (for accessing DAP and local data)
-    39                                      
-    40                                      ; ES is used for the destination buffer (0x1000:0x0000)
-    41 00000206 31C0                        xor ax, ax              
-    42 00000208 8EC0                        mov es, ax              ; ES=0x0000 (Set later for buffer)
-    43                                      
-    44                                      ; Set up Stack (SS:SP = 0x7C0:0x7C00) - Stack must be within current segment
-    45                                      ; Use 0x7C0:0x7C00. Physical: (0x7C0 * 10h) + 0x7C00 = 0xF800 (high enough)
-    46 0000020A 8ED0                        mov ss, ax              ; SS=0x7C0
-    47 0000020C BC007C                      mov sp, 0x7C00          ; Stack starts high
-    48                                      
-    49                                      ; Save boot drive ID (DL is set by BIOS upon boot)
-    50                                      ; We need to use the full physical address here since DS is not 0
-    51 0000020F 8916FD7D                    mov word [0x7DFD], dx   ; Save DL at 0x7DFD (using DS=0x7C0 segment)
-    52                                      
-    53 00000213 FB                          sti                     ; Re-enable interrupts
+     8                                  KERNEL_LOAD_SEGMENT     equ 0x0100  ; Load kernel to physical address 0x1000
+     9                                  KERNEL_LOAD_OFFSET      equ 0x0000
+    10                                  KERNEL_SECTORS          equ 40      ; Read 40 sectors (20KB)
+    11                                  
+    12                                  start:
+    13 00000000 FA                          cli                     ; Disable interrupts
+    14                                      
+    15                                      ; --- 1. Setup Segments and Stack (Use DS=0 for simplicity, assuming BIOS supports) ---
+    16 00000001 31C0                        xor ax, ax              
+    17 00000003 8ED8                        mov ds, ax              ; DS = 0 (Access local data via absolute offset 0x7C00)
+    18 00000005 8EC0                        mov es, ax              ; ES = 0 (Will be reset for load buffer)
+    19 00000007 8ED0                        mov ss, ax              ; SS = 0
+    20 00000009 BC007C                      mov sp, 0x7C00          ; Stack grows down from 0x7C00
+    21                                      
+    22                                      ; Save boot drive ID (DL is set by BIOS upon boot)
+    23                                      ; Since DS=0, this stores DL at physical address 0x7DFD (0x7C00 + 0x1FD offset)
+    24 0000000C 8816[FD01]                  mov [boot_drive_storage], dl
+    25                                      
+    26 00000010 FB                          sti                     ; Re-enable interrupts
+    27                                      
+    28                                      ; --- 2. Reset the disk controller (with retries) ---
+    29 00000011 B90300                      mov cx, 3  ; Number of retries
+    30                                  .reset_loop:
+    31 00000014 51                          push cx
+    32 00000015 B400                        mov ah, 0x00            ; Function 0x00: Reset Disk System
+    33 00000017 8A16[FD01]                  mov dl, [boot_drive_storage] ; Use the saved drive number
+    34 0000001B CD13                        int 0x13
+    35 0000001D 7305                        jnc .load_stage2        ; If carry flag is clear, success! Jump to load.
+    36 0000001F 59                          pop cx
+    37 00000020 E2F2                        loop .reset_loop        ; If carry flag was set (error), try again.
+    38                                      
+    39 00000022 EB3A                        jmp disk_error          ; If all retries fail, then show error.
+    40                                  
+    41                                  .load_stage2:
+    42                                      ; Restore CX if loop succeeded (it was popped inside the loop in the original code, 
+    43                                      ; but restoring here ensures stack sanity if reset failed on first try)
+    44 00000024 59                          pop cx ; Discard the previous CX pushed before the .reset_loop
+    45                                  
+    46                                      ; --- 3. Load the kernel from disk (with retries) ---
+    47 00000025 B90300                      mov cx, 3  ; Reset retry counter for the read operation
+    48                                  .read_loop:
+    49 00000028 51                          push cx
+    50                                      
+    51 00000029 B80001                      mov ax, KERNEL_LOAD_SEGMENT
+    52 0000002C 8EC0                        mov es, ax              ; ES = 0x0100 (Destination segment: 0x1000)
+    53 0000002E BB0000                      mov bx, KERNEL_LOAD_OFFSET ; BX = 0x0000 (Destination offset)
     54                                  
-    55                                      ; 2. Execute LBA Read (INT 0x13 / AH=0x42)
-    56                                      
-    57                                      ; Setup Buffer Address (ES:BX = 0x0100:0x0000 -> 0x1000 physical)
-    58 00000214 B80001                      mov ax, KERNEL_LOAD_SEGMENT
-    59 00000217 8EC0                        mov es, ax
-    60 00000219 BB0000                      mov bx, KERNEL_LOAD_OFFSET
+    55 00000031 B402                        mov ah, 0x02            ; Function 0x02: Read Sectors
+    56 00000033 B028                        mov al, KERNEL_SECTORS  ; AL = 40 (Read 40 sectors)
+    57 00000035 B500                        mov ch, 0               ; CH = Cylinder 0
+    58 00000037 B102                        mov cl, 2               ; CL = Sector 2 (Sector 1 is the boot sector, start reading at 2)
+    59 00000039 B600                        mov dh, 0               ; DH = Head 0
+    60 0000003B 8A16[FD01]                  mov dl, [boot_drive_storage] ; Drive number (restored from memory)
     61                                      
-    62                                      ; Setup DS:SI to point to the DAP structure (DS=0x7C0, SI=0x0000)
-    63 0000021C 31F6                        xor si, si              ; SI = 0x0000
+    62 0000003F CD13                        int 0x13
+    63 00000041 730F                        jnc .jump_to_stage2     ; If carry flag is clear, success!
     64                                      
-    65 0000021E B442                        mov ah, 0x42            ; Extended Read Sectors
-    66                                      
-    67                                      ; Use the actual boot drive ID from the saved location
-    68 00000220 8A16FD7D                    mov dl, [0x7DFD]        ; Load drive ID from the address *within* DS segment
-    69                                      
-    70 00000224 CD13                        int 0x13                ; Execute disk read
+    65                                      ; If read failed, reset the disk system again before retrying
+    66 00000043 50                          push ax                 ; Save AX
+    67 00000044 B400                        mov ah, 0x00            ; Function 0x00: Reset Disk System
+    68 00000046 8A16[FD01]                  mov dl, [boot_drive_storage]
+    69 0000004A CD13                        int 0x13
+    70 0000004C 58                          pop ax                  ; Restore AX
     71                                      
-    72                                      ; Check for error
-    73 00000226 7302                        jnc jump_to_stage2      ; If carry flag is clear, success!
+    72 0000004D 59                          pop cx
+    73 0000004E E2D8                        loop .read_loop         ; Try reading again
     74                                      
-    75                                      ; Read failed: Print error 'E' and error code in AH
-    76 00000228 EB0D                        jmp disk_read_failed
-    77                                      
-    78                                  ; --------------------------------------
-    79                                  ; JUMP LOGIC
-    80                                  ; --------------------------------------
-    81                                  
-    82                                  jump_to_stage2:
-    83                                      
-    84                                      ; 3. Final Segment Setup for Stage 2 (CRITICAL)
-    85                                      ; Set DS and ES to the target segment for kernel.asm's context.
-    86 0000022A B80001                      mov ax, KERNEL_LOAD_SEGMENT ; AX = 0x0100
-    87 0000022D 8ED8                        mov ds, ax              
-    88 0000022F 8EC0                        mov es, ax              
-    89                                  
-    90                                      ; 4. Jump to the loaded kernel (Stage 2)
-    91 00000231 680001                      push KERNEL_LOAD_SEGMENT ; Pushes 0x0100 (CS) onto the stack
-    92 00000234 6A00                        push KERNEL_LOAD_OFFSET  ; Pushes 0x0000 (IP) onto the stack
-    93 00000236 CB                          retf                     ; Far Return/Jump to 0x0100:0x0000
-    94                                  
-    95                                  ; --------------------------------------
-    96                                  ; ERROR HANDLING
-    97                                  ; --------------------------------------
-    98                                  disk_read_failed:
-    99                                      ; Need to adjust DS back to 0 so we can print to VGA text mode (0xB8000)
-   100                                      ; and use the print routines correctly (if they relied on a specific DS)
-   101 00000237 1E                          push ds
-   102 00000238 B80000                      mov ax, 0x0000
-   103 0000023B 8ED8                        mov ds, ax
-   104                                      
-   105 0000023D 88E5                        mov ch, ah              ; Save AH (error code) into CH
-   106                                  
-   107 0000023F B40E                        mov ah, 0x0E            ; Print character function
-   108 00000241 B045                        mov al, 'E'
-   109 00000243 E81200                      call print_char         ; Print 'E'
-   110                                      
-   111                                      ; Print AH error code (first hex digit)
-   112 00000246 88E8                        mov al, ch              ; Get error code back into AL
-   113 00000248 C0E804                      shr al, 4               ; Shift high nibble to low nibble
-   114 0000024B E80D00                      call print_hex_digit
-   115                                      
-   116                                      ; Print AH error code (second hex digit)
-   117 0000024E 88E8                        mov al, ch              ; Get error code back into AL
-   118 00000250 E80800                      call print_hex_digit
-   119                                      
-   120 00000253 1F                          pop ds                  ; Restore DS
-   121 00000254 FA                          cli                     ; Disable interrupts
-   122 00000255 F4                          hlt                     ; Halt
-   123 00000256 EBFE                        jmp $                   ; Infinite loop
-   124                                  
-   125                                  ; --------------------------------------
-   126                                  ; 16-bit UTILITIES
-   127                                  ; --------------------------------------
-   128                                  
-   129                                  ; Prints the character currently in AL (assumes AH=0x0E)
-   130                                  print_char:
-   131 00000258 CD10                        int 0x10
-   132 0000025A C3                          ret
-   133                                  
-   134                                  ; Converts AL (0-15) to ASCII hex digit and prints it
-   135                                  print_hex_digit:
-   136 0000025B 50                          push ax                 ; Save AX
-   137 0000025C 53                          push bx
-   138                                      
-   139 0000025D 240F                        and al, 0x0F            ; Isolate the low 4 bits (the digit)
-   140 0000025F 3C09                        cmp al, 0x09
-   141 00000261 7602                        jbe is_digit
-   142 00000263 0407                        add al, 0x07            ; If 10-15, add 7 (A-F)
-   143                                  is_digit:
-   144 00000265 0430                        add al, 0x30            ; Add ASCII '0'
-   145 00000267 B40E                        mov ah, 0x0E            ; Set print function code
-   146 00000269 E8ECFF                      call print_char
-   147                                      
-   148 0000026C 5B                          pop bx
-   149 0000026D 58                          pop ax
-   150 0000026E C3                          ret
+    75 00000050 EB0C                        jmp disk_error          ; If all retries fail, show error.
+    76                                  
+    77                                  .jump_to_stage2:
+    78                                      ; --- 4. Prepare Segments for Stage 2 (Must be correct for Stage 2's ORG) ---
+    79 00000052 B80001                      mov ax, KERNEL_LOAD_SEGMENT
+    80 00000055 8ED8                        mov ds, ax              ; DS = 0x0100
+    81 00000057 8EC0                        mov es, ax              ; ES = 0x0100
+    82                                      
+    83                                      ; --- 5. Jump to the loaded kernel ---
+    84 00000059 EA00000001                  jmp KERNEL_LOAD_SEGMENT:KERNEL_LOAD_OFFSET ; Far jump to 0x0100:0x0000
+    85                                  
+    86                                  ; Error handling
+    87                                  disk_error:
+    88 0000005E BE[6E00]                    mov si, msg_disk_error
+    89                                  print_string:
+    90 00000061 B40E                        mov ah, 0x0E            ; BIOS teletype output function
+    91                                  .loop:
+    92 00000063 AC                          lodsb                   ; Load character from [DS:SI] into AL (DS=0)
+    93 00000064 3C00                        cmp al, 0
+    94 00000066 7404                        je .halt
+    95 00000068 CD10                        int 0x10                ; Call BIOS video interrupt
+    96 0000006A EBF7                        jmp .loop
+    97                                  .halt:
+    98 0000006C FA                          cli
+    99 0000006D F4                          hlt
+   100                                  
+   101                                  ; --- Data ---
+   102 0000006E 4469736B2072656164-     msg_disk_error: db 'Disk read error!', 0
+   102 00000077 206572726F722100   
+   103                                  
+   104                                  ; Padding to 512 bytes total. boot_drive_storage needs to be at 0x1FD offset.
+   105 0000007F 00<rep 17Eh>            times 510 - ($ - $$) - 1 db 0   
+   106 000001FD 00                      boot_drive_storage: db 0        ; Store drive ID here (at 0x7DFD physical, 0x1FD offset)
+   107 000001FE 55AA                    dw 0xAA55                       ; Boot signature (0x7DFE, 0x7DFF)

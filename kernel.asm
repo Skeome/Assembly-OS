@@ -12,13 +12,11 @@
 KERNEL32_LOAD_SEGMENT   equ 0x1000  ; Segment to load kernel32.bin (0x1000 * 16 = 0x10000 physical)
 KERNEL32_JUMP_ADDRESS   equ 0x10000 ; 32-bit physical address to jump to
 KERNEL32_SECTORS_TO_READ equ 256    ; Load 128 KB (256 sectors)
-; KERNEL_START_LBA_32 calculation: Sector 1 (boot.bin) + 40 sectors (kernel.asm) = Sector 41 (LBA 41)
-KERNEL_START_LBA_32     equ 0x29    ; LBA 41
+KERNEL_START_LBA_32     equ 0x29    ; LBA 41 (Sectors 2-41 are kernel.asm, so kernel32 starts at LBA 41)
 BOOT_DRIVE_ADDRESS      equ 0x7DFD  ; Drive ID storage (from boot.asm at 0x7C00 + 0x1FD)
 TEMP_STACK_PTR          equ 0x7000  ; Dedicated stack for BIOS calls (below 0x7C00)
 
 ; --- Disk Address Packet (DAP) Structure for AH=0x42 ---
-; We only need one read operation, so the DAP can be static (mostly).
 dap_packet:
 dap_size:           db 0x10         ; Size of DAP (16 bytes)
 dap_reserved:       db 0x00
@@ -29,7 +27,7 @@ dap_lba_low:        dd KERNEL_START_LBA_32      ; LBA Start (41)
 dap_lba_high:       dd 0x00000000
 
 
-; --- UTILITIES (Minimal 16-bit debugging) ---
+; --- UTILITIES (Minimal 16-bit debugging/printing) ---
 disk_error_code:    db 0
 
 print_char:                 ; Routine to print a character in AL
@@ -71,13 +69,13 @@ print_string:
 start:
     cli                         ; Disable interrupts while setting up
     
-    ; --- 1. Set up Segments and Stack (CRITICAL) ---
-    ; DS, ES, SS must be set to 0. Stack pointer is set low.
+    ; --- 1. Set up Segments and Stack (CRITICAL FIX) ---
+    ; DS, ES, SS must be set to 0. We'll rely on the BIOS to keep CS pointing to 0x1000.
     xor ax, ax                  
-    mov ds, ax                  ; DS=0 for accessing DAP/GDT (Memory below 64KB)
-    mov es, ax                  ; ES=0 initially
+    mov ds, ax                  ; DS=0: Required to read BOOT_DRIVE_ADDRESS (0x7DFD)
+    mov es, ax                  ; ES=0: Temporary, will be reset for load buffer
     mov ss, ax                  ; SS=0
-    mov sp, 0x9000              ; Set main stack pointer (0x9000)
+    mov sp, 0x9000              ; Set main stack pointer (0x9000 physical)
     
     sti                         ; Re-enable interrupts
 
@@ -87,8 +85,8 @@ start:
     int 0x10
     
     ; Load drive ID for disk calls
-    mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID from 0x7DFD (written by boot.asm)
-    
+    mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID from 0x7DFD (DS=0 is correct)
+
     ; --- 2. Load KERNEL32.BIN (Stage 3) in one go ---
     
     ; Setup Buffer Address for disk read (ES:BX = 0x1000:0x0000 -> 0x10000 physical)
@@ -96,15 +94,21 @@ start:
     mov es, ax
     mov bx, 0x0000
     
-    ; Setup DS:SI to point to the DAP structure (DS=0, SI=dap_packet offset)
-    mov si, dap_packet
+    ; Setup DS:SI to point to the DAP structure.
+    ; CRITICAL FIX: Since DAP is at ORG 0x1000, we must temporarily set DS to 0x0100.
+    push ds ; Save DS=0
+    mov ax, 0x0100
+    mov ds, ax ; DS = 0x0100 (Now DS:dap_packet points to 0x1000 + offset)
+
+    mov si, dap_packet          ; SI = offset of DAP within the 0x100 segment
     
-    ; Attempt Read (with retries)
+    ; Attempt Read (with retries) - DL is already set
     mov di, 3                       ; Retry count
 .retry_read:
-    push sp                         ; Save current SP
+    push sp                         ; Save original SP (0x9000)
     mov sp, TEMP_STACK_PTR          ; Switch to dedicated stack (0x7000)
-    pusha                           
+    
+    pusha                           ; Save general registers (AX is still needed for AH=0x42)
     
     mov ah, 0x42                    ; Extended Read Sectors (INT 0x13)
     
@@ -131,9 +135,12 @@ start:
 
 
 .read_success:
+    pop ds ; Restore DS to 0x0000
+    
     ; --- CHECKPOINT 2: Successful Load ---
+    mov ah, 0x0E
     mov al, '2'
-    call print_char
+    int 0x10
     
     ; --- 3. Enable A20 Gate ---
     mov ax, 0x2402              ; A20 enable function (int 0x15)
@@ -141,21 +148,28 @@ start:
     jc disk_error               ; Jump if A20 failed (unlikely in modern VMs)
 
     ; --- CHECKPOINT 3: A20 Enabled ---
+    mov ah, 0x0E
     mov al, '3'
-    call print_char
+    int 0x10
 
     ; --- 4. Load GDT ---
-    ; CRITICAL FIX: The GDT base address is relative to ORG 0x1000.
-    ; We must add the load address (0x1000) to the GDT's base address pointer.
-    mov ebx, gdt_start          ; Get GDT label offset
-    add ebx, 0x1000             ; Add the load address 0x1000 (Physical address of kernel.asm)
+    ; Re-set DS to our load segment (0x100) to access GDT data internally.
+    mov ax, 0x0100
+    mov ds, ax
+    
+    ; CRITICAL GDT ADDRESS FIX: 
+    ; The GDT definition is physically at 0x1000 + offset. We must explicitly
+    ; set the base address field (gdt_descriptor + 2) to this physical address.
+    mov ebx, gdt_start          ; Get GDT label offset (offset from 0x1000)
+    add ebx, 0x1000             ; Add the load address 0x1000 (Physical address)
     mov dword [gdt_descriptor + 2], ebx ; Update the 32-bit base address field of the descriptor
 
     lgdt [gdt_descriptor]
 
     ; --- CHECKPOINT 4: GDT Loaded ---
+    mov ah, 0x0E
     mov al, '4'
-    call print_char
+    int 0x10
     
     ; --- 5. Set up Data Segment Registers with new selector (0x10) ---
     mov ax, 0x10    ; The Data Segment Selector
@@ -167,7 +181,7 @@ start:
 
     ; --- CHECKPOINT 5: Segments Initialized ---
     mov al, '5'
-    call print_char
+    int 0x10
     
     ; --- 6. Switch to Protected Mode ---
     mov eax, cr0
@@ -176,18 +190,22 @@ start:
 
     
     ; --- JUMP TO 32-BIT KERNEL (Stage 3) ---
-    ; Use a far jump (retf in 16-bit mode) to load CS and EIP atomically,
-    ; completing the transition to 32-bit Protected Mode.
-    ; Selector 0x08 is the Code Segment.
+    ; This is the final 16-bit instruction.
+    ; Far jump loads 0x08 into CS and 0x10000 into EIP atomically.
     push dword KERNEL32_JUMP_ADDRESS ; Pushes 0x10000 (EIP)
     push dword 0x08                  ; Pushes 0x08 (CS Selector)
-    retf                             ; Far Return/Jump to 0x08:0x10000
+    retf                             
     
 ; --------------------------------------
 ; Error Handling and Data
 ; --------------------------------------
 
 disk_error:
+    ; Need to ensure DS=0 for error message string access and video printing.
+    push ds
+    xor ax, ax
+    mov ds, ax
+    
     mov ah, 0x0E
     mov al, 'E'
     int 0x10
@@ -202,6 +220,8 @@ disk_error:
 
     mov si, msg_disk_error_generic 
     call print_string
+    
+    pop ds ; Restore DS
     cli
     hlt
     jmp $
