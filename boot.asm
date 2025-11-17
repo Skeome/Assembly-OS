@@ -115,6 +115,11 @@ start:
     ; --- Checkpoint C (Load complete) ---
     mov al, 'C'
     call print_char
+
+    mov ax, KERNEL_LOAD_SEGMENT
+    mov ds, ax              ; Set DS to kernel segment
+    mov es, ax              ; Set ES to kernel segment
+
     jmp KERNEL_LOAD_SEGMENT:KERNEL_LOAD_OFFSET
 
 ; --------------------------------------
