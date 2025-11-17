@@ -74,11 +74,25 @@ start:
     mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID saved by stage 1
     
     ; --- 1. Reset the disk controller (with retries) ---
-    ; NOTE: We are removing the loop and error jump temporarily for debugging stability.
-    
-    mov ah, 0x00            ; Function 0x00: Reset Disk System
-    int 0x13
-    
+    ; **STABILITY TEST: Skipping the potentially faulty disk reset loop.**
+    ; The disk is already reset by the bootloader.
+    ; mov cx, 3               ; Number of retries
+; .reset_loop:
+;     push cx
+    ; mov ah, 0x00            ; Function 0x00: Reset Disk System
+    ; int 0x13
+    ; jnc .read_kernel_stage  ; If carry flag is clear, success!
+; 
+    ; ; Save error code and try again
+    ; mov [disk_error_code], ah
+    ; pop cx
+    ; loop .reset_loop        ; If carry flag was set (error), try again.
+; 
+    ; jmp disk_error          ; If all retries fail
+
+.read_kernel_stage:
+    ; pop cx                  ; Discard retry counter from stack (only used if loop ran)
+
     ; --- CHECKPOINT 1 (Primary Checkpoint) ---
     mov al, '1'
     call print_char
