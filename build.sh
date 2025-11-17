@@ -4,7 +4,7 @@
 set -e
 
 # 1. Assemble the bootloader (boot.asm)
-nasm -f bin -o boot.bin boot.asm
+nasm -f bin -o boot.bin -l boot.lst boot.asm
 
 # 2. Assemble the kernel loader (kernel.asm)
 nasm -f bin -o kernel.bin kernel.asm
