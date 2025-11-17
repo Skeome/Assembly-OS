@@ -39,10 +39,13 @@ start:
     ; If all retries fail, then show error.
     mov si, msg_disk_error_reset
     call print_string_halt
-    jmp start
 
 .load_stage2:
     pop cx ; Discard the 'cx' value from the stack (we succeeded)
+    
+    ; --- CHECKPOINT A: Disk Reset OK ---
+    mov al, 'A'
+    call print_char
 
     ; --- 2. Load the kernel from disk (with retries) ---
     mov cx, 3  ; Reset retry counter for the read operation
@@ -75,9 +78,16 @@ start:
     ; If all retries fail, show error.
     mov si, msg_disk_error_load
     call print_string_halt
-    jmp start
 
 .jump_to_stage2:
+    ; --- CHECKPOINT B: Kernel Load OK ---
+    mov al, 'B'
+    call print_char
+    
+    ; --- CHECKPOINT C: Final Jump ---
+    mov al, 'C'
+    call print_char
+
     ; --- 3. Jump to the loaded kernel ---
     jmp KERNEL_LOAD_SEGMENT:KERNEL_LOAD_OFFSET
 

@@ -11,6 +11,7 @@
 KERNEL32_LOAD_SEGMENT equ 0x1000  ; 16-bit segment (0x1000 * 16 = 0x10000)
 KERNEL32_JUMP_ADDRESS equ 0x10000 ; 32-bit physical address
 BOOT_DRIVE_ADDRESS equ 0x7DFD ; The physical address where boot.asm stored the drive ID
+TEMP_STACK_PTR equ 0x7000     ; Temporary stack pointer for BIOS calls
 
 ; --- Data for read loop ---
 sectors_to_read:    dw 0
@@ -66,38 +67,23 @@ start:
     mov ds, ax                  ; DS = 0 (for accessing data by physical address)
     mov es, ax                  ; ES = 0
     mov ss, ax                  ; SS = 0
-    mov sp, 0x9000              ; Set stack pointer to a safe place (9000h)
+    mov sp, 0x9000              ; Set main stack pointer (used for local calls like print_char)
     
     sti                         ; Re-enable interrupts
 
-    ; Load drive ID. DS is already 0, so we can access 0x7DFD directly.
+    ; Load drive ID for later use in read loop
     mov dl, [BOOT_DRIVE_ADDRESS] ; Load drive ID saved by stage 1
     
-    ; --- 1. Reset the disk controller (with retries) ---
-    ; **STABILITY TEST: Skipping the potentially faulty disk reset loop.**
-    ; The disk is already reset by the bootloader.
-    ; mov cx, 3               ; Number of retries
-; .reset_loop:
-;     push cx
-    ; mov ah, 0x00            ; Function 0x00: Reset Disk System
-    ; int 0x13
-    ; jnc .read_kernel_stage  ; If carry flag is clear, success!
-; 
-    ; ; Save error code and try again
-    ; mov [disk_error_code], ah
-    ; pop cx
-    ; loop .reset_loop        ; If carry flag was set (error), try again.
-; 
-    ; jmp disk_error          ; If all retries fail
-
+    ; --- 1. Reset the disk controller (for safety, but without retries) ---
+    mov ah, 0x00            ; Function 0x00: Reset Disk System
+    int 0x13
+    
 .read_kernel_stage:
-    ; pop cx                  ; Discard retry counter from stack (only used if loop ran)
-
-    ; --- CHECKPOINT 1 (Primary Checkpoint) ---
+    ; --- CHECKPOINT 1 ---
     mov al, '1'
     call print_char
 
-; --- 2. Load the kernel from disk using CHS (reverted) ---
+; --- 2. Load the kernel from disk using CHS ---
     
     mov word [sectors_to_read], 256
     mov dword [current_lba], 41
@@ -116,17 +102,21 @@ start:
     mov ax, word [current_lba]      ; AX = LBA (low 16 bits)
     xor dx, dx                      ; DX:AX = LBA
     
-    ; Calculate Head (H): LBA % (SectorsPerTrack * Heads) / SectorsPerTrack
+    ; --- LBA to CHS Conversion ---
+    
+    ; Calculate Head (H) and Sector (S) based on LBA modulo 18
     mov cx, 18                      ; Divisor (SectorsPerTrack)
     div cx                          ; AX = C/H Temp, DX = LBA % 18 (Sector-1 Remainder)
     
     inc dl                          ; DL = Sector (1-based)
-    mov cl, dl                      ; CL = Sector (1-based, S0...S5)
+    mov cl, dl                      ; CL = Sector (1-based, S0...S5). 
     
-    mov al, dh                      ; AL = C/H Temp (Original quotient)
-    mov dh, 0                       ; DH = Head (H) (Final H is 0 or 1 for floppies)
+    mov dh, 0                       ; DH = Head (H) is always 0 for floppies in this setup.
+    
+    mov bp, cx                      ; **STORE C/S (CX) in non-volatile BP**
+    mov bx, dx                      ; **STORE H/S (DX) in non-volatile BX**
 
-    ; Calculate Cylinder (C): LBA / SectorsPerCylinder (36)
+    ; Calculate Cylinder (C) based on LBA divided by 36
     mov ax, word [current_lba]
     xor dx, dx
     mov cx, 36
@@ -141,7 +131,7 @@ start:
     shl al, 6                       ; Shift C8, C9 to CL bits 7, 6
     or cl, al                       ; Combine with Sector
     
-    ; DH (Head) is already 0. DL (Drive) will be loaded below.
+    mov bp, cx                      ; **RE-STORE C/S (CX) in BP**
     
     ; --- Determine sectors to read (relying on CL) ---
     mov al, cl
@@ -158,28 +148,44 @@ start:
     mov ax, di                      ; ax = min(sectors_on_track, sectors_remaining)
 .read_count_ok:
     mov byte [sectors_this_read], al 
+    
+    ; --- CHECKPOINT 3 ---
+    mov al, '3'
+    call print_char
 
     ; --- Attempt Read (with retries) ---
     mov di, 3                       ; Retry count in DI
 .retry_read:
-    pusha                           ; Saves all registers
+    push sp                         ; Save current SP (0x9000)
+    mov sp, TEMP_STACK_PTR          ; Switch to dedicated, isolated stack (0x7000)
+    
+    pusha                           ; Saves all general-purpose registers
+    
+    ; --- RESTORE CHS PARAMETERS from BP/BX to CX/DX for INT 0x13 ---
+    mov cx, bp                      ; Load calculated C/S from BP into CX
+    mov dx, bx                      ; Load calculated H/S from BX into DX
+    
     mov ah, 0x02                    ; Function: Read Sectors
     mov al, [sectors_this_read]     ; AL = sectors to read
     
-    ; DL (drive) needs to be reloaded 
-    mov dl, [BOOT_DRIVE_ADDRESS]
+    ; DL (drive) MUST be reloaded for every int 0x13 call
+    mov dl, [BOOT_DRIVE_ADDRESS]    ; Reload DL before INT 0x13
     
     int 0x13
     
     ; Check AH for the status code after the interrupt
     mov byte [disk_error_code], ah
     
-    popa                            ; Restores all registers (BX, CX, DX are restored with CHS params)
+    popa                            ; Restores all registers
+    
+    pop sp                          ; Restore main stack pointer (0x9000)
+    
+    ; Test status code
     jnc .read_success               ; Success!
     
     ; Read failed, reset disk and retry
     pusha
-    mov dl, [BOOT_DRIVE_ADDRESS]
+    mov dl, [BOOT_DRIVE_ADDRESS]    ; Reload DL for disk reset
     mov ah, 0x00
     int 0x13
     popa
@@ -197,6 +203,10 @@ start:
     jmp disk_error                  
 
 .read_success:
+    ; --- CHECKPOINT 4 ---
+    mov al, '4'
+    call print_char
+    
     ; --- Update counters and pointers ---
     mov al, [sectors_this_read]
     xor ah, ah                      ; AX = sectors we just read
@@ -222,8 +232,8 @@ start:
     jmp .read_loop                  ; Read next chunk
 
 .a20_stage:
-    ; --- CHECKPOINT 3 ---
-    mov al, '3'
+    ; --- CHECKPOINT 5 ---
+    mov al, '5'
     call print_char
 
     ; --- Enable A20 Gate ---
@@ -231,8 +241,8 @@ start:
     int 0x15                    ; Call BIOS
     jc disk_error               ; Jump if error 
 
-    ; --- CHECKPOINT 4 ---
-    mov al, '4'
+    ; --- CHECKPOINT 6 ---
+    mov al, '6'
     call print_char
 
     ; --- Load GDT ---
@@ -241,12 +251,12 @@ start:
     mov ax, 0x10  ; The Data Segment Selector
     mov ss, ax    ; Set the Stack Segment to a valid selector
 
-    ; --- CHECKPOINT 5 ---
-    mov al, '5'
+    ; --- CHECKPOINT 7 ---
+    mov al, '7'
     call print_char
 
-    ; --- CHECKPOINT 6 ---
-    mov al, '6'
+    ; --- CHECKPOINT 8 ---
+    mov al, '8'
     call print_char
 
     ; --- WAIT FOR KEYPRESS (16-bit) ---
