@@ -3,11 +3,11 @@
 ; Stage 3 Kernel Entry Point
 ; Loaded by Stage 2 at 0x10000.
 ; Runs in 32-bit Protected Mode.
-; Job: Finalize segment registers, set up interrupt system, and run the core loop.
+; Job: Finalize segment registers, clear screen, and display final message.
 ; ------------------------------------------------------------------
 
 [BITS 32]
-org 0x10000 ; We are loaded at physical address 0x10000 (KERNEL32_JUMP_ADDRESS)
+org 0x10000 ; We are loaded at physical address 0x10000
 
 kernel_start:
     ; --- 1. INITIAL 32-BIT SETUP ---
@@ -19,61 +19,40 @@ kernel_start:
     mov gs, ax
     mov ss, ax      ; Set stack segment
     
-    ; Set up the stack pointer far away from the kernel code/data
+    ; Set up the stack pointer 
     mov esp, 0x90000 
     
-    ; --- 2. BASIC I/O SETUP: Clear Screen ---
-    mov edi, 0xB8000 ; Start of Video Memory
-    mov ecx, 80 * 25 ; Total character cells (4000)
-    mov eax, 0x0F200F20 ; Two characters at once (White space on Black)
-    rep stosd        ; Fill the screen with ' '
+    ; --- 2. CLEAR SCREEN (VGA Text Mode) ---
+    mov edi, 0xB8000        ; Start of Video Memory
+    mov ecx, 80 * 25        ; Total character cells (4000)
+    mov eax, 0x0F200F20     ; Two characters at once (White space on Black)
+    rep stosd               ; Fill the screen
     
-    ; Print 32-bit confirmation message
+    ; --- 3. PRINT WELCOME MESSAGE ---
     mov esi, welcome_msg_32
     mov edi, 0xB8000        ; Top-left
     call print_string_32
-
-    ; --- 3. INTERRUPT SYSTEM SETUP (CRITICAL) ---
-    cli                     ; Disable interrupts while setting up control hardware
     
-    ; Remap the PIC to map IRQs 0-15 to ISRs 32-47
-    call PIC_remap          
-    
-    ; Load the IDT descriptor into IDTR
-    call idt_install        
-    
-    ; Populate the IDT with exception and IRQ handlers
-    call isrs_install       
-    
-    ; --- 4. KERNEL CHECKPOINT & ENABLE INTERRUPTS ---
-    ; Print final checkpoint '9' to confirm interrupt system readiness
-    mov edi, 0xB8000 + (3*80*2) ; Move down to line 3
-    mov al, '9'
-    mov ah, 0x0F
-    mov [edi], ax           
-    
-    sti                     ; Enable hardware interrupts globally
-    
-    ; Main Loop / Wait for Interrupt
-    hlt                     ; Halt the CPU until the next interrupt
-    jmp $                   ; Loop indefinitely
+    ; --- 4. HALT ---
+    cli
+    hlt                     
+    jmp $                   
 
 ; --------------------------------------
 ; 32-bit Utilities
 ; --------------------------------------
 
 ; Prints a null-terminated string (DS:ESI) to B8000 (VGA Text Mode)
-; Preserves EDI as a pointer to the next available screen location.
 print_string_32:
     pusha
     mov ebx, edi            ; Save screen buffer address
 .loop_str:
-    lodsb                   ; Load byte from [ESI] into AL (ESI auto-incremented)
+    lodsb                   ; Load byte from [ESI] into AL 
     cmp al, 0
     je .done_str
     
     mov ah, 0x0F            ; Attribute (White on Black)
-    stosw                   ; Write AX (char + attr) to [EDI] (EDI auto-incremented by 2)
+    stosw                   ; Write AX (char + attr) to [EDI] 
     jmp .loop_str
 .done_str:
     mov edi, ebx            ; Restore screen buffer address
@@ -81,13 +60,8 @@ print_string_32:
     ret
 
 
-; --- Data and Includes ---
-welcome_msg_32: db 'SUCCESS! Kernel 32-bit Protected Mode Entered.', 0
-
-; Include dependencies (NASM includes them here during assembly)
-%include "idt.asm"
-%include "isrs.asm"
-%include "pic.asm"
+; --- Data ---
+welcome_msg_32: db 'Protected Mode Active: Kernel Core Initialized.', 0
 
 ; --- Padding ---
 times 131072 - ($ - $$) db 0 ; Pad to 128KB (256 sectors)
