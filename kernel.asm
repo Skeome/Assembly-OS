@@ -154,7 +154,7 @@ start:
 .read_success:
     pop ds ; Restore DS to 0x0000 (Saved before the load loop start)
     
-    ; --- 4. ENABLE A20 GATE (FAST PORT 0x92 METHOD) ---
+    ; --- 4. ENABLE A20 GATE (FAST PORT 0x92 METHOD + DELAY) ---
     ; This method is the most reliable for virtual environments.
     cli
     
@@ -167,8 +167,10 @@ start:
     ; Write the byte back to port 0x92
     out 0x92, al
     
-    ; The code proceeds immediately to GDT setup.
-
+    ; CRITICAL FIX: Add a small delay for the hardware to latch the A20 state
+    jmp $+2 
+    nop
+    
     jmp a20_check_success ; Skip subroutines
 
 a20_check_success:

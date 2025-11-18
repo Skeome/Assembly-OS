@@ -28,7 +28,7 @@ idt_descriptor:
 idt_set_gate:
     push edi
     push eax
-    push ebp 
+    push ebx ; Save EBX before it's modified for the high 16-bit calculation
     push ecx
     push edx
 
@@ -37,7 +37,7 @@ idt_set_gate:
     lea edi, [idt + eax]
     
     ; 1. Set Offset (low 16 bits)
-    mov [edi], bx               ; Write low 16 bits of handler address
+    mov [edi], bx               ; Write low 16 bits of handler address (uses 16-bit BX)
     
     ; 2. Set Selector (2 bytes)
     mov [edi + 2], cx           ; Write segment selector (e.g. 0x08)
@@ -47,13 +47,14 @@ idt_set_gate:
     mov [edi + 4], dl           ; Write low byte of flags (P, DPL, S, Type)
     
     ; 4. Set Offset (high 16 bits)
-    mov ebp, ebx                ; EBP = full 32-bit address
-    shr ebp, 16                 ; EBP = high 16 bits
-    mov [edi + 6], bp           ; Write high 16 bits of handler address
+    ; Fix: Use EAX as temp register to calculate and write the high 16 bits
+    mov eax, [esp + 12]         ; EAX = full 32-bit address (EBX was pushed 4th, so it's at esp+12 after 4 pushes)
+    shr eax, 16                 ; EAX = high 16 bits (clear low 16 bits)
+    mov [edi + 6], ax           ; Write high 16 bits of handler address (using 16-bit AX)
 
     pop edx
     pop ecx
-    pop ebp
+    pop ebx
     pop eax
     pop edi
     ret
