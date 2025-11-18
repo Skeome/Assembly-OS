@@ -94,8 +94,6 @@ start:
     
 .read_sector_loop:
     ; --- LBA to CHS Conversion (LBA -> CH:Cylinder, DH:Head, CL:Sector) ---
-    ; Formula for 1.44MB floppy: SPT=18, H=2. LBA = (C * 2 + H) * 18 + (S - 1)
-    
     mov ax, [current_lba]
     xor dx, dx                  ; DX:AX = LBA
     mov bl, 18                  ; Sectors Per Track (SPT)
@@ -118,8 +116,6 @@ start:
     ; Clear AH and ensure AL=1 for AH=0x02 call
     mov ah, 0x02                ; Function 0x02: Read Sector
     mov al, 1                   ; Read 1 sector (THIS IS CRITICAL)
-    
-    ; DH, CH, CL, DL are now correctly set up.
     
     pusha                       ; Save all general registers
     
@@ -158,11 +154,24 @@ start:
 .read_success:
     pop ds ; Restore DS to 0x0000 (Saved before the load loop start)
     
-    ; --- 4. Enable A20 Gate ---
-    mov ax, 0x2402              ; A20 enable function (int 0x15)
-    int 0x15                    
-    jc disk_error               ; Jump if A20 failed
+    ; --- 4. ENABLE A20 GATE (FAST PORT 0x92 METHOD) ---
+    ; This method is the most reliable for virtual environments.
+    cli
+    
+    ; Read the current status of port 0x92
+    in al, 0x92
+    
+    ; OR the A20 bit (bit 1) to enable it
+    or al, 0x02 
+    
+    ; Write the byte back to port 0x92
+    out 0x92, al
+    
+    ; The code proceeds immediately to GDT setup.
 
+    jmp a20_check_success ; Skip subroutines
+
+a20_check_success:
     ; --- 5. Load GDT (Fixed previously, using correct physical address) ---
     ; Re-set DS to our load segment (0x100) to access GDT data internally.
     mov ax, 0x0100
@@ -175,20 +184,15 @@ start:
     lgdt [gdt_descriptor]
 
     ; --- 6. Set up Data Segment Registers with new selector (0x10) ---
-    mov ax, 0x10    ; The Data Segment Selector
-    mov ds, ax      
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax      
-
+    ; Removed pre-PM loads.
+    
     ; --- 7. Switch to Protected Mode ---
+    cli ; Ensure interrupts are disabled for transition
     mov eax, cr0
     or eax, 0x1
     mov cr0, eax
 
-    ; --- CRITICAL FIX: Replace retf with a far jump for 32-bit switch ---
-    ; This jump forces the CPU to use the 32-bit segment descriptor (0x08) immediately.
+    ; --- CRITICAL FIX: Use a far jump for 32-bit switch ---
     jmp 0x08:KERNEL32_JUMP_ADDRESS ; Far jump to 0x08:0x10000
     
 ; --------------------------------------
@@ -207,7 +211,7 @@ disk_error:
     int 0x10 ; Screen is now cleared.
 
     ; Ensure DS=0 for error message string access.
-    pop ds ; Balance any stray pushes, though ideally we jump to a clean state
+    ; pop ds is removed as it's not needed here and can corrupt the stack depth
     xor ax, ax
     mov ds, ax
     
