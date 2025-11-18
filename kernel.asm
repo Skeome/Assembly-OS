@@ -95,28 +95,33 @@ start:
 .read_sector_loop:
     ; --- LBA to CHS Conversion (LBA -> CH:Cylinder, DH:Head, CL:Sector) ---
     ; Formula for 1.44MB floppy: SPT=18, H=2. LBA = (C * 2 + H) * 18 + (S - 1)
+    
     mov ax, [current_lba]
     xor dx, dx                  ; DX:AX = LBA
     mov bl, 18                  ; Sectors Per Track (SPT)
     div bl                      ; AL = (C * 2 + H), AH = (S - 1)
+    
+    push ax                     ; Save AX, which holds (C*2+H) and (S-1)
     
     mov cl, 2                   ; Heads Per Cylinder (HPC)
     div cl                      ; AL = Cylinder (C), AH = Head (H)
     
     mov ch, al                  ; CH = Cylinder
     mov dh, ah                  ; DH = Head
-
-    mov al, bl                  ; AL = SPT (18)
-    mov ah, dl                  ; AH = Sector index (S-1) from previous divide
-    inc ah                      ; AH = Sector (S) 1-18
-    mov cl, ah                  ; CL = Sector (1-18)
     
-    ; --- Read 1 Sector ---
-    pusha                       ; Save all general registers
+    pop ax                      ; Restore AX. AL=(C*2+H), AH=(S-1)
     
+    mov al, ah                  ; AL = (S-1)
+    inc al                      ; AL = Sector (S), 1-18
+    mov cl, al                  ; CL = Sector (1-18)
+    
+    ; Clear AH and ensure AL=1 for AH=0x02 call
     mov ah, 0x02                ; Function 0x02: Read Sector
-    mov al, 1                   ; Read 1 sector
-    mov dl, [BOOT_DRIVE_ADDRESS] ; Drive number
+    mov al, 1                   ; Read 1 sector (THIS IS CRITICAL)
+    
+    ; DH, CH, CL, DL are now correctly set up.
+    
+    pusha                       ; Save all general registers
     
     int 0x13
     
@@ -126,6 +131,7 @@ start:
     popa                        ; Restore state before reset attempt
     pusha
     mov ah, 0x00                ; Reset Disk System
+    mov dl, [BOOT_DRIVE_ADDRESS]
     int 0x13
     popa
     
@@ -181,11 +187,9 @@ start:
     or eax, 0x1
     mov cr0, eax
 
-    
-    ; --- JUMP TO 32-BIT KERNEL (Stage 3) ---
-    push dword KERNEL32_JUMP_ADDRESS ; Pushes 0x10000 (EIP)
-    push dword 0x08                  ; Pushes 0x08 (CS Selector)
-    retf                             
+    ; --- CRITICAL FIX: Replace retf with a far jump for 32-bit switch ---
+    ; This jump forces the CPU to use the 32-bit segment descriptor (0x08) immediately.
+    jmp 0x08:KERNEL32_JUMP_ADDRESS ; Far jump to 0x08:0x10000
     
 ; --------------------------------------
 ; Error Handling and Data

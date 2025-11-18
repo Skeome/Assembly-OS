@@ -20,10 +20,10 @@ kernel_start:
     mov ss, ax      ; Set stack segment
     
     ; Set up the stack pointer 
-    mov esp, 0x900000 ; FIXED: Set stack pointer to a safe, high address (9MB)
+    mov esp, 0x400000 ; FIXED: Set stack pointer to a very safe, high address (4MB)
     
     ; --- 2. CLEAR SCREEN (VGA Text Mode) ---
-    mov edi, 0xB8000        ; Start of Video Memory
+    mov edi, 0xB8000        ; Start of Video Memory (Physical address)
     mov ecx, 80 * 25        ; Total character cells (4000)
     mov eax, 0x0F200F20     ; Two characters at once (White space on Black)
     rep stosd               ; Fill the screen
@@ -47,7 +47,7 @@ print_string_32:
     pusha
     mov ebx, edi            ; Save screen buffer address
 .loop_str:
-    lodsb                   ; Load byte from [ESI] into AL 
+    lodsb                   ; Load byte from [DS:ESI] into AL 
     cmp al, 0
     je .done_str
     
