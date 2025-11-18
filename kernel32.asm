@@ -20,7 +20,7 @@ kernel_start:
     mov ss, ax      ; Set stack segment
     
     ; Set up the stack pointer 
-    mov esp, 0x90000 
+    mov esp, 0x900000 ; FIXED: Set stack pointer to a safe, high address (9MB)
     
     ; --- 2. CLEAR SCREEN (VGA Text Mode) ---
     mov edi, 0xB8000        ; Start of Video Memory

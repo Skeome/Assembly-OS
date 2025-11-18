@@ -12,11 +12,12 @@
 KERNEL32_LOAD_SEGMENT   equ 0x1000  ; Segment to load kernel32.bin (0x1000 * 16 = 0x10000 physical)
 KERNEL32_JUMP_ADDRESS   equ 0x10000 ; 32-bit physical address to jump to
 KERNEL32_SECTORS_TO_READ equ 256    ; Load 128 KB (256 sectors)
-KERNEL_START_LBA_32     equ 0x29    ; LBA 41 (Kernel32 starts here)
+KERNEL_START_LBA_32     equ 0x29    ; LBA 41 (Kernel32 starts here - starting point for CHS read)
 BOOT_DRIVE_ADDRESS      equ 0x7DFD  ; Drive ID storage (from boot.asm, DS=0)
 TEMP_STACK_PTR          equ 0x7000  ; Dedicated stack for BIOS calls (below 0x7C00)
 
 ; --- Disk Address Packet (DAP) Structure for AH=0x42 ---
+; NOTE: DAP structure is kept for reference but NO LONGER USED in read routine.
 dap_packet:
 dap_size:           db 0x10         
 dap_reserved:       db 0x00
@@ -27,6 +28,8 @@ dap_lba_low:        dd KERNEL_START_LBA_32
 dap_lba_high:       dd 0x00000000
 
 disk_error_code:    db 0
+current_lba:        dw KERNEL_START_LBA_32 ; Tracks the next LBA to read
+sectors_left:       dw KERNEL32_SECTORS_TO_READ ; Tracks sectors remaining
 
 start:
     cli                         ; Disable interrupts while setting up
@@ -50,13 +53,20 @@ start:
     mov dx, 0x184F ; End at row 24, column 79 (80x25)
     int 0x10 ; Screen is now cleared.
 
-    ; Display 16-bit welcome using direct VGA memory write (DS must be B800)
-    push ds ; Save DS=0
-    mov ax, 0xB800
-    mov ds, ax ; DS = 0xB800 (VGA Text Mode)
+    ; Load drive ID for disk calls (DL is needed for INT 0x13)
+    mov dl, [BOOT_DRIVE_ADDRESS] 
     
-    mov si, msg_16bit_welcome_offset ; SI holds the offset of the message (relative to DS=0)
-    mov di, 0x00
+    ; --- FIX: Set DS to kernel segment (0x100) for source string, ES to B800 for video target ---
+    push ds ; Save DS=0
+    mov ax, 0x0100
+    mov ds, ax ; DS = 0x0100 (Physical address 0x1000, for accessing kernel data)
+    
+    mov ax, 0xB800
+    mov es, ax ; ES = 0xB800 (VGA Text Mode segment)
+
+    mov si, msg_16bit_welcome_offset ; SI holds the offset of the message (relative to 0x1000)
+    mov di, 0x00 ; DI = offset 0 (top-left)
+    
 .print_loop:
     lodsb                   
     cmp al, 0               
@@ -65,73 +75,96 @@ start:
     stosw
     jmp .print_loop
 .print_done:
-    pop ds ; Restore DS=0
-
-    ; Load drive ID for disk calls (DL is needed for INT 0x13)
-    mov dl, [BOOT_DRIVE_ADDRESS] 
-
-    ; --- 3. Load KERNEL32.BIN (Stage 3) ---
+    pop ds ; Restore DS=0 (Needed for [BOOT_DRIVE_ADDRESS] at the very top of memory)
+    
+    ; --- 3. Load KERNEL32.BIN (Stage 3) using AH=0x02 (Legacy CHS Read) ---
     
     ; Setup Buffer Address (ES:BX = 0x1000:0x0000 -> 0x10000 physical)
     mov ax, KERNEL32_LOAD_SEGMENT
     mov es, ax
-    mov bx, 0x0000
+    mov bx, 0x0000          ; Destination offset starts at 0x0000 (0x10000 physical)
     
-    ; CRITICAL: Set DS to our segment (0x0100) to access DAP internal data.
-    push ds ; Save DS=0
-    mov ax, 0x0100
-    mov ds, ax 
-    mov si, dap_packet          ; DS:SI points to DAP
+    mov cx, 3               ; Retry count for the whole load loop
+.load_loop_retry:
+    push cx
+    
+    ; Initialize loop variables
+    mov word [current_lba], KERNEL_START_LBA_32
+    mov word [sectors_left], KERNEL32_SECTORS_TO_READ
+    
+.read_sector_loop:
+    ; --- LBA to CHS Conversion (LBA -> CH:Cylinder, DH:Head, CL:Sector) ---
+    ; Formula for 1.44MB floppy: SPT=18, H=2. LBA = (C * 2 + H) * 18 + (S - 1)
+    mov ax, [current_lba]
+    xor dx, dx                  ; DX:AX = LBA
+    mov bl, 18                  ; Sectors Per Track (SPT)
+    div bl                      ; AL = (C * 2 + H), AH = (S - 1)
+    
+    mov cl, 2                   ; Heads Per Cylinder (HPC)
+    div cl                      ; AL = Cylinder (C), AH = Head (H)
+    
+    mov ch, al                  ; CH = Cylinder
+    mov dh, ah                  ; DH = Head
 
-    ; Attempt Read (with retries) - DL is already set
-    mov di, 3                       ; Retry count
-.retry_read:
-    push sp                         
-    mov sp, TEMP_STACK_PTR          ; Switch to dedicated stack 
+    mov al, bl                  ; AL = SPT (18)
+    mov ah, dl                  ; AH = Sector index (S-1) from previous divide
+    inc ah                      ; AH = Sector (S) 1-18
+    mov cl, ah                  ; CL = Sector (1-18)
     
-    pusha                           
+    ; --- Read 1 Sector ---
+    pusha                       ; Save all general registers
     
-    mov ah, 0x42                    ; Extended Read Sectors
+    mov ah, 0x02                ; Function 0x02: Read Sector
+    mov al, 1                   ; Read 1 sector
+    mov dl, [BOOT_DRIVE_ADDRESS] ; Drive number
     
     int 0x13
     
-    mov byte [disk_error_code], ah
+    jnc .sector_read_success    ; If CF is clear, success
     
-    popa                            
-    pop sp                          ; Restore SP
-    
-    jnc .read_success               ; Success!
-    
-    ; Read failed, reset disk and retry
+    ; --- Read failure - Reset and Retry ---
+    popa                        ; Restore state before reset attempt
     pusha
-    mov ah, 0x00                    ; Reset Disk System
+    mov ah, 0x00                ; Reset Disk System
     int 0x13
     popa
     
-    dec di                          
-    jnz .retry_read
+    pop cx                      ; Restore main retry counter
+    loop .load_loop_retry       ; Retry the entire load process
     
-    ; --- Read failed after all retries ---
-    jmp disk_error                  
+    ; All retries failed
+    jmp disk_error
 
+.sector_read_success:
+    popa                        ; Restore saved registers
+    
+    ; Advance counters
+    inc word [current_lba]          ; LBA += 1
+    add bx, 0x200                   ; Dest offset += 512 bytes (1 sector)
+    
+    ; Check if done
+    dec word [sectors_left]
+    jnz .read_sector_loop           ; Read next sector if sectors_left > 0
+    
+    ; Success! Kernel loaded.
+    jmp .read_success               ; Jump to A20 activation
 
 .read_success:
-    pop ds ; Restore DS to 0x0000
+    pop ds ; Restore DS to 0x0000 (Saved before the load loop start)
     
     ; --- 4. Enable A20 Gate ---
     mov ax, 0x2402              ; A20 enable function (int 0x15)
     int 0x15                    
     jc disk_error               ; Jump if A20 failed
 
-    ; --- 5. Load GDT ---
+    ; --- 5. Load GDT (Fixed previously, using correct physical address) ---
     ; Re-set DS to our load segment (0x100) to access GDT data internally.
     mov ax, 0x0100
     mov ds, ax
     
-    ; CRITICAL GDT ADDRESS FIX: Update GDT descriptor base address
-    mov ebx, gdt_start          ; Get GDT label offset
-    add ebx, 0x1000             ; Add the load address 0x1000 
-    mov dword [gdt_descriptor + 2], ebx 
+    ; CRITICAL GDT ADDRESS FIX: 
+    mov ebx, gdt_start          ; EBX now holds the correct physical GDT base address
+    mov dword [gdt_descriptor + 2], ebx ; Update the GDT descriptor base address
 
     lgdt [gdt_descriptor]
 
@@ -161,8 +194,16 @@ start:
 ; The print utilities have been removed to keep this file minimal.
 ; The error handler simply uses BIOS INT 0x10.
 disk_error:
+    ; Clear screen before printing fatal error
+    mov ah, 0x06 ; Scroll up function
+    mov al, 0x00 ; Scroll whole window
+    mov bh, 0x07 ; Attribute (White on Black)
+    mov cx, 0x0000 ; Start at row 0, column 0
+    mov dx, 0x184F ; End at row 24, column 79 (80x25)
+    int 0x10 ; Screen is now cleared.
+
     ; Ensure DS=0 for error message string access.
-    pop ds 
+    pop ds ; Balance any stray pushes, though ideally we jump to a clean state
     xor ax, ax
     mov ds, ax
     
