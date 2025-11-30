@@ -1,5 +1,5 @@
 ; ==================================================================
-; AtlantOS - Stage 1 Bootloader
+; Yggdrasil ][ - Stage 1 Bootloader
 ; The "Surface Interface"
 ; ==================================================================
 [ORG 0x7C00]        ; BIOS always loads us here
@@ -7,8 +7,7 @@
 
 ; --- Constants ---
 LOADER_OFFSET equ 0x1000 ; We will load Stage 2 at memory address 0x1000
-;LOADER_SIZE equ 5      ; How many sectors to read (allow 2.5KB for loader)
-LOADER_SIZE equ 20     ; Updated to read 20 sectors (10KB for loader and kernel)
+LOADER_SIZE equ 20       ; Read 20 sectors (10KB for loader and kernel)
 
 start:
     ; 1. Save the Boot Drive Number
@@ -67,7 +66,7 @@ print_string:
 
 ; --- Data ---
 BOOT_DRIVE  db 0 ; Variable to store the drive number
-msg_success db 'AtlantOS Initialized...', 0x0D, 0x0A, 0
+msg_success db 'Yggdrasil ][ Initialized...', 0x0D, 0x0A, 0
 msg_error   db 'Disk Error. Halting.', 0
 
 ; --- Padding & Magic Number ---

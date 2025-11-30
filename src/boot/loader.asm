@@ -1,5 +1,5 @@
 ; ==================================================================
-; AtlantOS - Stage 2 Loader
+; Yggdrasil ][ - Stage 2 Loader
 ; The "Gatekeeper" to Protected Mode
 ; ==================================================================
 [ORG 0x1000]          ; We loaded this file here in Stage 1
@@ -65,7 +65,7 @@ init_32bit:
     ; Visual Confirmation: Write to Video Memory directly
     ; (Since BIOS interrupts don't work anymore)
     mov byte [0xb8000], 'A'      ; Character 'A'
-    mov byte [0xb8001], 0x0B     ; Cyan on Black (Atlantis colors)
+    mov byte [0xb8001], 0x0B     ; Cyan on Black
     
     ; Jump to Kernel Entry Point
     jmp CODE_SEG:0x2000                  ; Kernel is loaded at 0x2000

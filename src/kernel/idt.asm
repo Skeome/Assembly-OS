@@ -1,5 +1,5 @@
 ; ===================================================
-; AtlantOS Interrupt Descriptor Table (IDT) & Drivers
+; Yggdrasil ][ Interrupt Descriptor Table (IDT) & Drivers
 ; ===================================================
 
 ; 1. Interrupt Service Routine
