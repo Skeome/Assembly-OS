@@ -34,7 +34,7 @@ all: $(OS_IMAGE)
 # We explicitly mount it as a floppy (if=floppy) so BIOS assigns DL=0x00
 run: $(OS_IMAGE)
 	@echo "[*] Booting AtlantOS..."
-	$(EMU) -drive format=raw,file=$(OS_IMAGE),index=0,if=floppy
+	$(EMU) -d int -drive format=raw,file=$(OS_IMAGE),index=0,if=floppy
 
 # 2. Create the Disk Image
 # We combine boot.bin and loader.bin, then pad the rest with zeros
