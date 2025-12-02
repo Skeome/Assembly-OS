@@ -18,7 +18,7 @@ EMU_FLAGS=(
 SRC_BOOT="src/boot"
 SRC_KERNEL="src/kernel"
 BUILD_DIR="build"
-OS_IMAGE="$BUILD_DIR/atlantos.img"
+OS_IMAGE="$BUILD_DIR/atlantos-core.img"
 
 # --- Functions ---
 

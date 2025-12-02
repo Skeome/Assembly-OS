@@ -12,7 +12,7 @@ BUILD_DIR = build
 
 # --- Targets ---
 # The final disk image
-OS_IMAGE = $(BUILD_DIR)/atlantos.img
+OS_IMAGE = $(BUILD_DIR)/atlantos-core.img
 
 # Sources
 BOOT_SRC = $(SRC_BOOT)/boot.asm
