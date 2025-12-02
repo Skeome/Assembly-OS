@@ -1,4 +1,4 @@
-# `Yggdrasil ][` OS - Bare-Metal Foundation
+# `Yggdrasil ][` - Codename AtlantOS - Bare-Metal Foundation
 This is the bare-metal foundation for the Inner Garden Foundation's OS.
 Architecture (3-Stage Load)
 This design is robust, minimal, and secure. Each stage has one job.
