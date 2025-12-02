@@ -1,6 +1,5 @@
 ; ==================================================================
-; Yggdrasil ][ Core Kernel
-; Away from the branches and into the core (Branchless Ternary Kernel)
+; AtlantOS - Core Kernel (Simulated Ternary Logic)
 ; ==================================================================
 [BITS 32]
 [ORG 0x2000]        ; We will load the kernel at 0x2000
