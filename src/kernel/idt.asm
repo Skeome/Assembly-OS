@@ -22,7 +22,6 @@ isr_keyboard:
     jnz .send_eoi           ; We ignore releases for now
 
     ; --- 3. CLI LOGIC (Typing) ---
-    
     ; Handle Backspace (0x0E) specially
     cmp al, 0x0E
     je .handle_backspace
@@ -51,7 +50,7 @@ isr_keyboard:
     cmp dword [cursor_pos], 640 ; Start of Line 4
     jle .send_eoi               ; Don't go past prompt start
     sub dword [cursor_pos], 2
-    call render_cursor ; Update cursor visibility
+    call render_cursor      ; Update cursor visibility
     jmp .send_eoi
 
 .move_right:
@@ -59,7 +58,7 @@ isr_keyboard:
     cmp dword [cursor_pos], 4000 ; End of Screen
     jge .send_eoi
     add dword [cursor_pos], 2
-    call render_cursor ; Update cursor visibility
+    call render_cursor      ; Update cursor visibility
     jmp .send_eoi
 
 .handle_backspace:
@@ -82,9 +81,9 @@ isr_keyboard:
 print_char_isr:
     ; AL contains the char to print
     push edi
-    
+
     mov edi, [cursor_pos]   ; Get current cursor position
-    
+
     ; Bounds Check: Don't write past screen end
     cmp edi, 4000           ; 80 * 25 * 2
     jge .done_print
@@ -101,9 +100,9 @@ print_char_isr:
 
 backspace_isr:
     push edi
-    
+
     mov edi, [cursor_pos]
-    
+
     ; Bounds Check: Don't delete the prompt/status bar
     cmp edi, 640            ; Start of Line 4
     jle .done_back
@@ -111,7 +110,7 @@ backspace_isr:
     sub edi, 2              ; Move cursor back
     mov byte [0xB8000 + edi], ' ' ; Erase char
     mov [cursor_pos], edi   ; Update variable
-    call render_cursor       ; Update cursor visibility
+    call render_cursor      ; Update cursor visibility
 
 .done_back:
     pop edi
@@ -120,22 +119,19 @@ backspace_isr:
 newline_isr:
     push eax
     push edx
-    
+
     ; Calculate offset to start of next line
-    ; Current Line = cursor_pos / 160
-    ; Next Line = (Current Line + 1) * 160
-    
     mov eax, [cursor_pos]
     mov edx, 0
     mov ecx, 160        ; 80 chars * 2 bytes
     div ecx             ; EAX = Line Number, EDX = Remainder
-    
+
     inc eax             ; Next Line
     mul ecx             ; EAX = Start of next line
-    
+
     mov [cursor_pos], eax
     call render_cursor
-    
+
     pop edx
     pop eax
     ret
@@ -149,13 +145,14 @@ render_cursor:
     mov ah, [cursor_visible]
     test ah, ah
     jz .hide_cursor
-    xor al, 0x07 ; Invert color for visibility
+    xor al, 0x70        ; For visibility
 
-    .hide_cursor:
+.hide_cursor:
     mov [0xB8000 + edi + 1], al ; Update cursor visibility
     pop edi
     pop eax
     ret
+
 ; ---------------------------------------------------------
 ; 3. IDT SETUP & REMAP
 ; ---------------------------------------------------------
@@ -175,7 +172,7 @@ setup_idt:
     mov al, 0x01
     out 0x21, al
     out 0xA1, al
-    
+
     ; Enable Keyboard (IRQ 1)
     mov al, 0xFD
     out 0x21, al
@@ -209,14 +206,12 @@ idt_descriptor:
     dd idt_start
 
 ; The Cursor (Points to Video Memory Offset)
-; We start at Line 4 (80 chars * 2 bytes * 4 lines = 640)
 cursor_pos: dd 640
 
 ; US QWERTY Scan Code Set 1 Map
-; 0x00 - 0x39
 keymap:
     db 0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0x0E, 0    ; 0x00-0x0F
-    db 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '[', ']', 0, 0, 'A', 'S'    ; 0x10-0x1F (Removed 0x0A)
+    db 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '[', ']', 0, 0, 'A', 'S'    ; 0x10-0x1F
     db 'D', 'F', 'G', 'H', 'J', 'K', 'L', ';', "'", '`', 0, '\', 'Z', 'X', 'C', 'V'  ; 0x20-0x2F
     db 'B', 'N', 'M', ',', '.', '/', 0, '*', 0, ' '                                  ; 0x30-0x39
     times 100 db 0  ; Padding

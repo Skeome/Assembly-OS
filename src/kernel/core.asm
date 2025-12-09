@@ -21,17 +21,15 @@ kernel_entry:
     mov al, 0x20        ; Disable cursor (bits 5-0: start scanline)
     out dx, al
 
-    mov dx , 0x3D4  
+    mov dx, 0x3D4
     mov al, 0x0B        ; Cursor End Register
     out dx, al
     mov dx, 0x3D5
-    mov al, 0x00        ; disable cursor (bits 5-0: end scanline)
+    mov al, 0x00        ; Disable cursor (bits 5-0: end scanline)
     out dx, al
 
     ; Setup the "Ternary Test"
-    ; We will start with a positive drift and watch it stabilize
-    ;mov eax, 40         ; Removed: Start with positive drift
-    mov esi, 0           ; EAX represents Sysyem Error/Entropy state
+    mov esi, 0           ; ESI represents System Error/Entropy state
     mov edi, 0xB8000     ; Start writing at top-left
 
     ; Call IDT Setup Routine
@@ -41,9 +39,9 @@ kernel_loop:
     ; ---------------------------------------------------------
     ; VISUALIZATION
     ; ---------------------------------------------------------
-    ; We need to save registers because we are about to do math
+    ; Save registers
     push esi
-    push edi             
+    push edi
 
     ; Reset render pointer to the start of Status Line
     mov edi, 0xB8000
@@ -55,23 +53,22 @@ kernel_loop:
 
     ; Reset render pointer again
     mov edi, 0xB8000
-    
+
     ; Default character: 'X' (Zero/Locked)
     mov cx, 0x0A58      ; 'X' character with Light Green color
     cmp esi, 0
-    je .draw_status            ; If zero, keep 'X'
+    je .draw_status     ; If zero, keep 'X'
 
     ; If not zero, assume Negative first
-    mov cx, 0x0C3C    ; '<' character with Light Red color
+    mov cx, 0x0C3C      ; '<' character with Light Red color
     cmp esi, 0
-    jl .draw_status            ; If less than 0, keep '<'
+    jl .draw_status     ; If less than 0, keep '<'
 
     ; Must be positive
-    mov cx, 0x0E3E    ; '>' character with Light Yellow color
+    mov cx, 0x0E3E      ; '>' character with Light Yellow color
 
 .draw_status:
     ; Render the state bar (Visualizing the magnitude of error)
-    ; We map the value in EAX to a position on the screen
     mov ebx, esi        ; Copy Drift Value
     cmp ebx, 0
     jge .abs_calc
@@ -92,9 +89,7 @@ kernel_loop:
     jmp .render_loop
 
 .update_labels:
-    ;---------------------------------------------------------
     ; Kernel Status Messages
-    ;---------------------------------------------------------
     mov edi, 0xB80A0    ; Move to start of Line 2 (Row 1, Col 0)
 
     cmp esi, 0
@@ -119,30 +114,23 @@ kernel_loop:
     ; ---------------------------------------------------------
     ; Ternary Scheduler Logic
     ; ---------------------------------------------------------
-    ; The kernel automatically seeks equilibrium (0)
-    ; In a full OS, this logic would balance load between cores.
-
     cmp esi, 0
     je .cycle_delay
 
     ; Branchless Ternary Operator
-    ; Direction = sign(ESI)
     xor ebx, ebx
     xor edx, edx
     cmp esi, 0
-    setg bl                 ; BL = 1 if Positive
-    setl dl                 ; DL = 1 if Negative
-    sub ebx, edx            ; EBX = 1 or -1
+    setg bl              ; BL = 1 if Positive
+    setl dl              ; DL = 1 if Negative
+    sub ebx, edx         ; EBX = 1 or -1
 
-    sub esi, ebx            ; Restore Equilibrium
+    sub esi, ebx         ; Restore Equilibrium
 
     ; ---------------------------------------------------------
     ; Kernel Cycle Delay
     ; ---------------------------------------------------------
-
 .cycle_delay:
-    mov ecx, 0x00400000
-    ; Toggle cursor visibility for blinking effect
     mov ecx, 0x00100000
 .wait:
     loop .wait
@@ -154,4 +142,4 @@ kernel_loop:
 ; ==================================================================
 ; Include Drivers
 ; ==================================================================
-    %include 'src/kernel/idt.asm'
+%include 'src/kernel/idt.asm'
