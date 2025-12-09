@@ -4,6 +4,9 @@
 [BITS 32]
 [ORG 0x2000]        ; We will load the kernel at 0x2000
 
+; --- Cursor Variables ---
+cursor_visible: db 1  ; Define cursor_visible globally
+
 kernel_entry:
     ; Clear the screen (Simple loop)
     mov edi, 0xB8000
@@ -11,25 +14,22 @@ kernel_entry:
     mov ax, 0x0720      ; Black background, white text, space character
     rep stosw
 
-    ; Disable hardware cursor
-    mov dx, 0x3D4       ; CRT Controller Index Register
-    mov al, 0x0A        ; Cursor Start Register
-    out dx, al
-    mov dx, 0x3D5       ; CRT Controller Data Register
-    mov al, 0x20        ; Disable cursor (bits 5-0: start scanline)
-    out dx, al
-
-    mov dx , 0x3D4  
-    mov al, 0x0B        ; Cursor End Register
+    ; Disable the hardware cursor
+    mov dx, 0x3D4
+    mov al, 0x0A
     out dx, al
     mov dx, 0x3D5
-    mov al, 0x00        ; disable cursor (bits 5-0: end scanline)
+    mov al, 0x20
+    out dx, al
+    mov dx, 0x3D4
+    mov al, 0x0B
+    out dx, al
+    mov dx, 0x3D5
+    mov al, 0x00
     out dx, al
 
     ; Setup the "Ternary Test"
-    ; We will start with a positive drift and watch it stabilize
-    ;mov eax, 40         ; Removed: Start with positive drift
-    mov esi, 0           ; EAX represents Sysyem Error/Entropy state
+    mov esi, 0           ; ESI represents System Error/Entropy state
     mov edi, 0xB8000     ; Start writing at top-left
 
     ; Call IDT Setup Routine
@@ -41,7 +41,7 @@ kernel_loop:
     ; ---------------------------------------------------------
     ; We need to save registers because we are about to do math
     push esi
-    push edi             
+    push edi
 
     ; Reset render pointer to the start of Status Line
     mov edi, 0xB8000
@@ -67,7 +67,7 @@ kernel_loop:
     ; Must be positive
     mov cx, 0x0E3E    ; '>' character with Light Yellow color
 
-.draw_status:
+draw_status:
     ; Render the state bar (Visualizing the magnitude of error)
     ; We map the value in EAX to a position on the screen
     mov ebx, esi        ; Copy Drift Value
@@ -140,10 +140,15 @@ kernel_loop:
 
 .cycle_delay:
     mov ecx, 0x00400000
-    ; Toggle cursor visibility for blinking effect
-    mov ecx, 0x00100000
 .wait:
     loop .wait
+
+    ; Toggle cursor visibility every 500ms
+    mov ecx, 0x00100000
+.wait_cursor:
+    loop .wait_cursor
+    xor byte [cursor_visible], 1  ; Toggle cursor_visible
+    call render_cursor            ; Call render_cursor (defined in idt.asm)
 
     jmp kernel_loop
 
