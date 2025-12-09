@@ -11,6 +11,21 @@ kernel_entry:
     mov ax, 0x0720      ; Black background, white text, space character
     rep stosw
 
+    ; Disable hardware cursor
+    mov dx, 0x3D4       ; CRT Controller Index Register
+    mov al, 0x0A        ; Cursor Start Register
+    out dx, al
+    mov dx, 0x3D5       ; CRT Controller Data Register
+    mov al, 0x20        ; Disable cursor (bits 5-0: start scanline)
+    out dx, al
+
+    mov dx , 0x3D4  
+    mov al, 0x0B        ; Cursor End Register
+    out dx, al
+    mov dx, 0x3D5
+    mov al, 0x00        ; disable cursor (bits 5-0: end scanline)
+    out dx, al
+
     ; Setup the "Ternary Test"
     ; We will start with a positive drift and watch it stabilize
     ;mov eax, 40         ; Removed: Start with positive drift
