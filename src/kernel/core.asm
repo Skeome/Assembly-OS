@@ -140,6 +140,8 @@ kernel_loop:
 
 .cycle_delay:
     mov ecx, 0x00400000
+    ; Toggle cursor visibility for blinking effect
+    mov ecx, 0x00100000
 .wait:
     loop .wait
 

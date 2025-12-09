@@ -11,7 +11,7 @@ isr_keyboard:
     xor eax, eax
     in al, 0x60             ; Read Scan Code
 
-    ; --- 1. CURSOR NAVIGATION (Was Game Logic) ---
+    ; --- 1. CURSOR NAVIGATION ---
     cmp al, 0x4B            ; Left Arrow
     je .move_left
     cmp al, 0x4D            ; Right Arrow
@@ -50,16 +50,16 @@ isr_keyboard:
     ; Move cursor BACK 2 bytes (without erasing)
     cmp dword [cursor_pos], 640 ; Start of Line 4
     jle .send_eoi               ; Don't go past prompt start
-    
     sub dword [cursor_pos], 2
+    call render_cursor ; Update cursor visibility
     jmp .send_eoi
 
 .move_right:
     ; Move cursor FORWARD 2 bytes
     cmp dword [cursor_pos], 4000 ; End of Screen
     jge .send_eoi
-    
     add dword [cursor_pos], 2
+    call render_cursor ; Update cursor visibility
     jmp .send_eoi
 
 .handle_backspace:
@@ -93,6 +93,7 @@ print_char_isr:
     mov byte [0xB8000 + edi + 1], 0x0B ; Color: Cyan on Black
 
     add dword [cursor_pos], 2    ; Advance Cursor
+    call render_cursor            ; Update cursor visibility
 
 .done_print:
     pop edi
@@ -110,6 +111,7 @@ backspace_isr:
     sub edi, 2              ; Move cursor back
     mov byte [0xB8000 + edi], ' ' ; Erase char
     mov [cursor_pos], edi   ; Update variable
+    call render_cursor       ; Update cursor visibility
 
 .done_back:
     pop edi
@@ -132,11 +134,28 @@ newline_isr:
     mul ecx             ; EAX = Start of next line
     
     mov [cursor_pos], eax
+    call render_cursor
     
     pop edx
     pop eax
     ret
 
+render_cursor:
+    push eax
+    push edi
+
+    mov edi, [cursor_pos]
+    mov al, [0xB8000 + edi + 1]
+    mov ah, [cursor_visible]
+    test ah, ah
+    jz .hide_cursor
+    xor al, 0x07 ; Invert color for visibility
+
+    .hide_cursor:
+    mov [0xB8000 + edi + 1], al ; Update cursor visibility
+    pop edi
+    pop eax
+    ret
 ; ---------------------------------------------------------
 ; 3. IDT SETUP & REMAP
 ; ---------------------------------------------------------
@@ -192,6 +211,7 @@ idt_descriptor:
 ; The Cursor (Points to Video Memory Offset)
 ; We start at Line 4 (80 chars * 2 bytes * 4 lines = 640)
 cursor_pos: dd 640
+cursor_visible: db 1  ; 1 = Visible, 0 = Hidden
 
 ; US QWERTY Scan Code Set 1 Map
 ; 0x00 - 0x39
