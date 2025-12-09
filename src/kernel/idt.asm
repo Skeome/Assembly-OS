@@ -46,29 +46,29 @@ isr_keyboard:
     jmp .send_eoi
 
 .move_left:
-    ; Save attribute of current character before moving
-    call save_char_attr
+    ; Save character and attribute of current position before moving
+    call save_char_and_attr
 
     ; Move cursor BACK 2 bytes (without erasing)
     cmp dword [cursor_pos], 640 ; Start of Line 4
     jle .send_eoi               ; Don't go past prompt start
     sub dword [cursor_pos], 2
 
-    ; Restore attribute of the character we just left
-    call restore_char_attr
+    ; Restore character and attribute of the character we just left
+    call restore_char_and_attr
     jmp .send_eoi
 
 .move_right:
-    ; Save attribute of current character before moving
-    call save_char_attr
+    ; Save character and attribute of current position before moving
+    call save_char_and_attr
 
     ; Move cursor FORWARD 2 bytes
     cmp dword [cursor_pos], 4000 ; End of Screen
     jge .send_eoi
     add dword [cursor_pos], 2
 
-    ; Restore attribute of the character we just left
-    call restore_char_attr
+    ; Restore character and attribute of the character we just left
+    call restore_char_and_attr
     jmp .send_eoi
 
 .handle_backspace:
@@ -89,8 +89,8 @@ isr_keyboard:
 ; 2. HELPER FUNCTIONS
 ; ---------------------------------------------------------
 print_char_isr:
-    ; Save attribute of current character before printing
-    call save_char_attr
+    ; Save character and attribute of current position before printing
+    call save_char_and_attr
 
     ; AL contains the char to print
     push edi
@@ -114,8 +114,8 @@ print_char_isr:
 backspace_isr:
     push edi
 
-    ; Save attribute of current character before moving
-    call save_char_attr
+    ; Save character and attribute of current position before moving
+    call save_char_and_attr
 
     mov edi, [cursor_pos]
 
@@ -128,8 +128,8 @@ backspace_isr:
     mov byte [0xB8000 + edi], ' ' ; Erase char
     mov [cursor_pos], edi   ; Update variable
 
-    ; Restore attribute of the character we just left
-    call restore_char_attr
+    ; Restore character and attribute of the character we just left
+    call restore_char_and_attr
 
 .done_back:
     pop edi
@@ -172,25 +172,30 @@ render_cursor:
     pop eax
     ret
 
-save_char_attr:
+save_char_and_attr:
     push eax
     push edi
     mov edi, [cursor_pos]
+    mov al, [0xB8000 + edi]      ; Load character under cursor
+    mov [cursor_saved_char], al  ; Save character
     mov al, [0xB8000 + edi + 1]  ; Load attribute from character under cursor
-    mov [cursor_saved_attr], al   ; Save it
+    mov [cursor_saved_attr], al  ; Save attribute
     pop edi
     pop eax
     ret
 
-restore_char_attr:
+restore_char_and_attr:
     push eax
     push edi
     mov edi, [cursor_pos]
-    mov al, [cursor_saved_attr]   ; Load saved attribute
+    mov al, [cursor_saved_char]  ; Load saved character
+    mov [0xB8000 + edi], al       ; Restore character
+    mov al, [cursor_saved_attr]  ; Load saved attribute
     mov [0xB8000 + edi + 1], al   ; Restore attribute
     pop edi
     pop eax
     ret
+
 ; ---------------------------------------------------------
 ; 3. IDT SETUP & REMAP
 ; ---------------------------------------------------------
@@ -246,7 +251,8 @@ idt_descriptor:
 ; The Cursor (Points to Video Memory Offset)
 cursor_pos: dd 640
 cursor_visible db 1  ; 1 = Visible, 0 = Hidden
-cursor_saved_attr: db 0 
+cursor_saved_char: db 0  ; Store the character under the cursor
+cursor_saved_attr: db 0  ; Store the attribute of the character under the cursor
 
 ; US QWERTY Scan Code Set 1 Map
 keymap:
