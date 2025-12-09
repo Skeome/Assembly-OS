@@ -4,6 +4,8 @@
 [BITS 32]
 [ORG 0x2000]        ; We will load the kernel at 0x2000
 
+cursor_visible db 1  ; 1 = Visible, 0 = Hidden
+
 kernel_entry:
     ; Clear the screen (Simple loop)
     mov edi, 0xB8000
@@ -144,6 +146,8 @@ kernel_loop:
     mov ecx, 0x00100000
 .wait:
     loop .wait
+    xor byte [cursor_visible], 1  ; Toggle visibility
+    call render_cursor
 
     jmp kernel_loop
 

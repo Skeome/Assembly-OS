@@ -211,7 +211,6 @@ idt_descriptor:
 ; The Cursor (Points to Video Memory Offset)
 ; We start at Line 4 (80 chars * 2 bytes * 4 lines = 640)
 cursor_pos: dd 640
-cursor_visible: db 1  ; 1 = Visible, 0 = Hidden
 
 ; US QWERTY Scan Code Set 1 Map
 ; 0x00 - 0x39
